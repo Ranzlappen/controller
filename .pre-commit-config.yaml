@@ -1,0 +1,62 @@
+# pre-commit hooks — https://pre-commit.com
+#
+# Install once per checkout:
+#   pip install pre-commit && pre-commit install
+#
+# Hooks run on `git commit` against staged files only. Run on the whole repo
+# with `pre-commit run --all-files`.
+#
+# Trimmed from Ranzlappen/repo-standards templates/.pre-commit-config.yaml:
+# the prettier hook is dropped because this repo ships no JS/TS/CSS, and
+# check-json / check-yaml / ruff-format already cover what is actually here.
+
+minimum_pre_commit_version: "3.7.0"
+
+default_install_hook_types: [pre-commit, commit-msg]
+
+repos:
+  # --- General hygiene ---
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=5000"] # 5 MB; raise only with a Git LFS reason.
+      - id: check-yaml
+        args: ["--unsafe"] # allow GitHub Actions custom tags.
+      - id: check-json
+      - id: check-toml
+      - id: detect-private-key
+
+  # --- Python: ruff lint + format (replaces black + isort + flake8) ---
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+      - id: ruff-format
+
+  # --- Markdown lint ---
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.42.0
+    hooks:
+      - id: markdownlint
+        args: ["--config", ".markdownlint.json"]
+
+  # --- Secret scan ---
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.0
+    hooks:
+      - id: gitleaks
+
+  # --- Conventional Commits message lint ---
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v3.4.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+        args: [] # Use the spec's default type list.

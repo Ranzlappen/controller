@@ -1,0 +1,88 @@
+# =============================================================================
+# .gitignore for padmap (Python desktop tool).
+#
+# Derived from Ranzlappen/repo-standards templates/.gitignore.example, trimmed
+# to the sections this project actually needs. The Secrets section stays first
+# and is never removed. Add new paths to the matching section rather than
+# appending at the bottom — keeps the file scannable.
+# =============================================================================
+
+
+# === Secrets / .env =========================================================
+# Anything credential-shaped, ever. .env.example is the only env file we
+# track; the rest are local-only.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p8
+*.p12
+*.cer
+*.crt
+secrets/
+credentials.json
+*.credentials.json
+
+
+# === Python =================================================================
+# Bytecode caches, virtualenvs, package metadata, common tooling caches.
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+build/
+dist/
+*.egg-info/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+
+# === User profiles ==========================================================
+# Profiles a user writes for their own hardware live outside the repo. The
+# bundled starting points in src/padmap/profiles/ ARE tracked and are not
+# matched by these rules.
+/profiles/
+*.local.json
+
+
+# === IDEs / editors =========================================================
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json.example
+.idea/
+*.swp
+*.swo
+*~
+.history/
+
+
+# === OS noise ===============================================================
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+.Trash-*
+._*
+
+
+# === Misc / temporary =======================================================
+*.tmp
+*.bak
+*.orig
+*.rej
+*.log
