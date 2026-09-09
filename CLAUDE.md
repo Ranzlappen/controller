@@ -75,7 +75,7 @@ Nothing deploys — padmap is installed locally with `pip install .`.
 
 | Workflow | Trigger | Scope | Deploys |
 | --- | --- | --- | --- |
-| `ci.yml` | PR + push to `main` | `**.py`, `pyproject.toml`, `requirements*.txt`, bundled profiles, itself | Nothing (validation only) |
+| `ci.yml` | PR + push to `main`, manual | `**.py`, `pyproject.toml`, `requirements*.txt`, bundled profiles, itself | Nothing (validation only) |
 | `security-scan.yml` | PR, push to `main`, weekly Mon 06:00 UTC, `branch_protection_rule` | Whole repo | Nothing (CodeQL + gitleaks + Scorecard) |
 | `dependency-review.yml` | PR to `main` | Dependency manifests | Nothing (blocks high-severity CVEs) |
 

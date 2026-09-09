@@ -30,6 +30,10 @@ on:
       - "requirements*.txt"
       - "pyproject.toml"
       - ".github/workflows/ci.yml"
+  # Lets a maintainer re-run the suite on demand — needed because GitHub
+  # evaluates the `paths` filters above against the tip commit only when a
+  # branch is created, so a docs-only tip commit skips CI on a new branch.
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
