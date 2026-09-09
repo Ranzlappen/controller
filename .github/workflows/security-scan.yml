@@ -63,7 +63,7 @@ jobs:
         language: ['python']
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@7fd177fa680c9881b53cdab4d346d32574c9f7f4  # v3
@@ -84,7 +84,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
         with:
           # Full history so gitleaks can scan past commits, not just the diff.
           fetch-depth: 0
@@ -116,7 +116,7 @@ jobs:
       actions: read
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v6
         with:
           persist-credentials: false
 
