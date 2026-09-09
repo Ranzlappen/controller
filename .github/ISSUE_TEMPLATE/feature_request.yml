@@ -1,0 +1,65 @@
+name: Feature request
+description: Suggest a new capability or a meaningful enhancement.
+title: "[Feature] "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion. Feature requests are most useful when
+        they describe the **problem** before the **solution** — that lets
+        us consider a wider set of fixes, including ones you might not
+        have thought of.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the user pain or missing capability. Concrete > abstract.
+      placeholder: I want the left stick to scroll horizontally in some apps but not others, and there is no way to switch profiles without restarting.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How would you like it to work? Sketches, mocks, and example flows are welcome.
+      placeholder: Bind a button to `special:next_profile` and cycle through a list of profiles named in the config.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What workarounds exist today, and why aren't they enough?
+    validations:
+      required: false
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and non-goals
+      description: What this feature should explicitly NOT try to do, to keep it focused.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: How important is this to you?
+      options:
+        - Nice to have
+        - Would meaningfully improve my workflow
+        - Currently blocking me
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I searched existing open and closed issues and discussions for similar proposals.
+          required: true

@@ -1,0 +1,20 @@
+# Funding sources surfaced on the repo's "Sponsor this project" button.
+# Reference: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/displaying-a-sponsor-button-in-your-repository
+#
+# All entries below are commented. Uncomment and fill in any you want to enable.
+# Multiple platforms are allowed. Use a YAML list when an entry takes one,
+# or a single string for the others.
+
+# github: [<your-username-or-org>]
+# patreon: <your-patreon-handle>
+# open_collective: <your-collective-name>
+# ko_fi: <your-ko-fi-handle>
+# tidelift: <platform>/<package>
+# community_bridge: <project-name>
+# liberapay: <your-liberapay-handle>
+# issuehunt: <your-issuehunt-handle>
+# lfx_crowdfunding: <project-slug>
+# polar: <your-polar-handle>
+# buy_me_a_coffee: <your-bmc-handle>
+# thanks_dev: <your-thanks-dev-handle>
+# custom: ['<https://your-funding-page>']

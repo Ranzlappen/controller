@@ -1,0 +1,10 @@
+# Issue-template chooser configuration.
+# Reference: https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/configuring-issue-templates-for-your-repository
+
+# Force users to pick a structured template; no "blank issue" escape hatch.
+blank_issues_enabled: false
+
+contact_links:
+  - name: Security report
+    url: https://github.com/Ranzlappen/controller/security/advisories/new
+    about: Use private vulnerability reporting for security issues; do not file a public issue. A key left stuck down counts as a security issue.

@@ -1,0 +1,95 @@
+name: Bug report
+description: Something doesn't work the way it should.
+title: "[Bug] "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. The two things that move a
+        padmap bug from "not reproducible" to "fixed quickly" are **the profile
+        you were running** and **what `padmap devices` prints** — please
+        include both.
+
+        > If a key was left **stuck down**, that is the most serious class of
+        > bug this project has. Please report it through
+        > [private vulnerability reporting](https://github.com/Ranzlappen/controller/security/advisories/new)
+        > instead of here.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A short, clear description of the bug.
+      placeholder: The right trigger fires as soon as I touch it, ignoring the threshold.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps, starting from the command you ran.
+      value: |
+        1. `padmap run -p ...`
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: profile
+    attributes:
+      label: The profile you were running
+      description: Paste the JSON, or the bundled profile name. Redact anything personal in a `text:` binding.
+      render: json
+    validations:
+      required: true
+
+  - type: textarea
+    id: devices
+    attributes:
+      label: Output of `padmap devices`
+      description: Tells us exactly which pad and driver you have. Add `padmap monitor` output too if the bug is about a specific button.
+      render: shell
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows
+        - Linux (X11)
+        - Linux (Wayland)
+        - macOS
+        - Other (specify below)
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: padmap and Python version
+      description: Output of `padmap --version` and `python3 --version`.
+      placeholder: padmap 0.1.0, Python 3.12.4
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I searched existing open and closed issues for duplicates.
+          required: true
+        - label: I confirmed the behaviour with `padmap run --dry-run` (which shows what padmap thinks it is sending).
+          required: false

@@ -1,0 +1,11 @@
+# CODEOWNERS for padmap
+#
+# Reference: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+#
+# Patterns are matched in order; the LAST matching pattern wins. Combine with
+# branch protection's "Require review from Code Owners" for enforcement.
+#
+# Single-maintainer repo, so one fallback rule is the whole file. Add narrower
+# rules below it if that changes.
+
+*                       @Ranzlappen

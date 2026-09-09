@@ -1,0 +1,43 @@
+name: Question
+description: Ask a usage or behavior question. For "I think this is a bug", use the bug template.
+title: "[Question] "
+labels: ["question", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If you're not sure whether something is a bug or just expected
+        behavior, this is the right form. Please describe what you tried
+        and what surprised you.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      placeholder: How should I handle X when Y?
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: What you tried and what happened
+      description: Even partial reproduction helps disambiguate question vs bug.
+    validations:
+      required: false
+
+  - type: textarea
+    id: docs
+    attributes:
+      label: Where you looked
+      description: README, CLAUDE.md, FAQ, prior issues. Helps us improve docs if the answer wasn't where you expected.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I searched existing issues and discussions for an answer.
+          required: true
