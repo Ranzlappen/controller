@@ -1,0 +1,132 @@
+# Project, tooling, test and lint configuration for padmap.
+#
+# Derived from Ranzlappen/repo-standards templates/pyproject.toml.example and
+# templates/ruff.toml. The standards let a project keep Ruff either in a
+# standalone ruff.toml or inline here — padmap picks inline so there is exactly
+# one Python config file at the repo root.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "padmap"
+version = "0.1.0"
+description = "Map an Xbox controller to keyboard keys and mouse movement."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [
+    { name = "Ranzlappen" },
+]
+keywords = ["xbox", "gamepad", "controller", "keyboard", "mouse", "xpadder", "remapper"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Utilities",
+]
+dependencies = [
+    # Controller input. SDL2 under the hood, so one code path covers the Xbox
+    # wired/wireless adapter on Windows, Linux (xpad) and macOS.
+    "pygame>=2.5,<3.0",
+    # Synthetic keyboard and mouse events.
+    "pynput>=1.7,<2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+padmap = "padmap.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Ranzlappen/controller"
+Issues = "https://github.com/Ranzlappen/controller/issues"
+Changelog = "https://github.com/Ranzlappen/controller/blob/main/CHANGELOG.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/padmap"]
+
+# --- Pytest -----------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-ra",
+    "--strict-config",
+    "--strict-markers",
+    "--cov=padmap",
+    "--cov-report=term-missing",
+    "--cov-report=xml",
+]
+filterwarnings = ["error"]
+markers = [
+    "hardware: needs a physical controller attached (deselect with -m 'not hardware')",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["src/padmap"]
+omit = ["*/__main__.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "class .*\\(Protocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
+show_missing = true
+fail_under = 80
+
+# --- Ruff (lint + format) ---------------------------------------------------
+[tool.ruff]
+# Matches `requires-python` above, not the machine Ruff happens to run on.
+target-version = "py310"
+line-length = 100
+extend-exclude = ["build", "dist", "__pycache__", ".venv", "venv"]
+
+[tool.ruff.lint]
+# Curated rule set from repo-standards: pyflakes (F), pycodestyle (E,W),
+# isort (I), pyupgrade (UP), bugbear (B), simplify (SIM), comprehensions (C4),
+# return-fix (RET), naming (N), security warnings (S).
+select = ["F", "E", "W", "I", "UP", "B", "SIM", "C4", "RET", "N", "S"]
+ignore = [
+    # `assert` is fine in tests (S101 fires on every test file otherwise).
+    "S101",
+    # Allow long URLs in comments (line-length already enforced elsewhere).
+    "E501",
+]
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "N802"]
+"**/conftest.py" = ["S"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["padmap", "conftest"]
+combine-as-imports = true
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+docstring-code-format = true
