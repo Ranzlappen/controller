@@ -1,0 +1,63 @@
+# Cursor rules for padmap
+#
+# Cursor reads this file at the start of every session in this repo. Treat it
+# as a thin pointer at the canonical sources of truth, not as another place
+# to keep architecture documentation. Anything that contradicts CLAUDE.md is
+# wrong — CLAUDE.md wins.
+
+# === Source of truth ===
+
+The authoritative architecture document is `CLAUDE.md` at the repo root.
+Read it before proposing structural changes. The README is for users; the
+CLAUDE.md is for AI tools and contributors making code changes. When the
+two disagree, CLAUDE.md wins and the README is updated to match.
+
+# === Behavior preservation (non-negotiable) ===
+
+This repo follows `repo-standards` PROMPT.md rule 2:
+
+  1. Keep 100% of original functionality. Never bundle a behavior change
+     into a refactor.
+  2. Analyze the target code paths *before* editing. Form a mental model
+     of the existing observable behavior first.
+  3. Every PR description and post-task self-check includes a
+     "Repo-specific risks / edge-cases" subsection. "None observed" is an
+     acceptable value; the heading must be present.
+
+padmap has one behaviour that outranks the rest: **never leave a key stuck
+down**. Every path that stops output (pause, quit, Ctrl-C, SIGTERM, an
+exception) must go through `Engine.release_all()`. A new code path that can
+hold a key needs a matching release path and a test that proves it.
+
+# === Conventional Commits ===
+
+Every commit message follows https://www.conventionalcommits.org/en/v1.0.0/ .
+Allowed types: feat, fix, docs, refactor, test, chore, ci, perf, style,
+revert. Optional scope in parens. Breaking changes get `!` and a
+`BREAKING CHANGE:` footer. The `commit-msg` pre-commit hook blocks
+non-conformant messages locally; CI re-checks the merge commit.
+
+# === Tiny-commit rhythm ===
+
+Default to one file change per commit unless two changes are atomically
+inseparable (rare). Each commit is preceded by a one-paragraph plain-English
+plan, followed by a self-check (files exist / YAML+JSON parses / links
+resolve / line-count delta matches the plan / no template placeholders
+leaked outside `templates/`), then a one-line summary. This matches how
+`repo-standards` PROMPT.md rule 9 expects upgrades to be performed.
+
+# === Where things live ===
+
+- `CLAUDE.md` — architecture, build commands, conventions, tech stack.
+- `README.md` — user-facing docs, getting started, project structure.
+- `.github/workflows/` — CI/CD; every workflow has `permissions:`,
+  40-char SHA pins, and `timeout-minutes`.
+- `.github/dependabot.yml` — weekly dependency updates.
+- `src/padmap/` — the package; `tests/` runs entirely on fakes.
+- `profiles/` inside the package — bundled JSON profiles.
+
+# === Working alongside other AI tools ===
+
+If contributors also use Claude Code, GitHub Copilot, or Codex on this
+repo, see `ai/AI_TEAM_PLAYBOOK.md` for the conventions that keep multiple
+AI tools from stepping on each other.
