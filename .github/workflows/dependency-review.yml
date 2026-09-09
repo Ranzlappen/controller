@@ -1,0 +1,44 @@
+# Dependency review on every PR to main.
+#
+# Copied from Ranzlappen/repo-standards
+# templates/.github/workflows/dependency-review.yml, unchanged: padmap has two
+# runtime dependencies and the default policy fits them.
+#
+# Consumes the GitHub Dependency Graph (Settings → Code security and analysis →
+# Dependency graph). Enable that toggle before this workflow produces useful
+# output.
+#
+# Required secrets: none.
+
+name: Dependency review
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  # Allow the action to comment the dependency diff on the PR.
+  pull-requests: write
+
+concurrency:
+  group: dependency-review-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    name: Dependency review
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Run dependency-review
+        uses: actions/dependency-review-action@da24556b548a50705dd671f47852072ea4c105d9 # v4
+        with:
+          # Block PRs that introduce high or critical CVEs in any new dependency.
+          fail-on-severity: high
+          # Comment the diff summary only when the check fails, so clean PRs
+          # stay uncluttered.
+          comment-summary-in-pr: on-failure

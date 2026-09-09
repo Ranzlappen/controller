@@ -1,0 +1,137 @@
+# Security scans: CodeQL static analysis + gitleaks secret scan.
+#
+# Runs on:
+#   - Every PR (catch issues before merge).
+#   - Every push to main (catch issues that bypassed PR review).
+#   - Weekly schedule (catch issues from newly-disclosed CVEs).
+#
+# Copied from Ranzlappen/repo-standards
+# templates/.github/workflows/security-scan.yml with one change: the CodeQL
+# language matrix is `python`, the only language padmap ships.
+#
+# Required secrets: none (GITHUB_TOKEN is the built-in one).
+
+name: Security scan
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    # Weekly Mondays 06:00 UTC. Adjust to a low-traffic time for the project.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+  # OpenSSF Scorecard re-runs whenever a (legacy) Branch protection rule
+  # changes, so the score reflects the current setup, not a stale snapshot.
+  # NOTE: GitHub Actions does not currently expose a workflow trigger for
+  # the newer Rulesets feature (Settings → Rules → Rulesets) — the
+  # `repository_ruleset` webhook event exists but is not in the Actions
+  # trigger list. Repos using Rulesets pick up Scorecard re-scoring via
+  # the weekly schedule above + workflow_dispatch. If GitHub adds a
+  # `repository_ruleset:` Actions trigger in the future, drop it in here.
+  branch_protection_rule:
+
+permissions:
+  contents: read
+  # Job-level permissions blocks below grant write scopes (security-events,
+  # id-token) where needed. Workflow-scope MUST stay `contents: read` only —
+  # the OpenSSF Scorecard signing server rejects results signed by a workflow
+  # that holds any `*: write` permission at workflow scope (its verifier
+  # treats workflow-scope writes as "global" and refuses to sign).
+  # See: https://github.com/ossf/scorecard-action#workflow-restrictions
+
+concurrency:
+  # PR runs cancel in progress; main and schedule runs queue to avoid races.
+  group: security-scan-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # Required to upload SARIF results to the Security tab.
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        # padmap is pure Python; add a language here the same commit that
+        # adds the first source file in it (GOVERNANCE.md, supply chain).
+        language: ['python']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@7fd177fa680c9881b53cdab4d346d32574c9f7f4  # v3
+        with:
+          languages: ${{ matrix.language }}
+          # Use the security-extended query suite for additional rules.
+          # Drop to 'security-and-quality' or remove to use defaults.
+          queries: security-extended
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@7fd177fa680c9881b53cdab4d346d32574c9f7f4  # v3
+        with:
+          category: '/language:${{ matrix.language }}'
+
+  gitleaks:
+    name: Gitleaks secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          # Full history so gitleaks can scan past commits, not just the diff.
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7  # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Optional license key for organisation-tier features. Leave unset
+          # for personal repos and the action runs in free mode.
+          # GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+  scorecard:
+    name: OpenSSF Scorecard
+    # Only runs on schedule, branch_protection_rule changes, or manual
+    # dispatch. Skipping on every PR avoids noise — the score is meaningful
+    # weekly and on real config changes, not on every code edit.
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'branch_protection_rule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # Needed to upload SARIF results to the Security tab.
+      security-events: write
+      # Needed for sigstore signing of Scorecard results.
+      id-token: write
+      # Read-only access to repo metadata, branch protection, etc.
+      contents: read
+      # Read-only access to actions metadata.
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@62b2cac7ed8198b15735ed49ab1e5cf35480ba46  # v2
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # Publish results to https://api.securityscorecards.dev so the
+          # repo earns the score badge. Set to "false" to keep results
+          # private (still uploaded to the Security tab below).
+          publish_results: true
+
+      - name: Upload SARIF results
+        uses: github/codeql-action/upload-sarif@7fd177fa680c9881b53cdab4d346d32574c9f7f4  # v3
+        with:
+          sarif_file: results.sarif
+          category: ossf-scorecard

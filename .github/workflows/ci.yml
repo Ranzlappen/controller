@@ -1,0 +1,81 @@
+# Lint, format and test on every pull request and every push to main.
+#
+# Adapted from Ranzlappen/repo-standards templates/.github/workflows/ci-python.yml:
+#   - Runs the floor and the ceiling of the supported Python range
+#     (`requires-python = ">=3.10"` in pyproject.toml, plus the 3.12
+#     classifier) rather than a single pinned version — the classifiers claim
+#     both work, so CI has to prove both work.
+#   - Adds a `ruff format --check` step; the project formats with Ruff.
+#   - Coverage floor (80%) is enforced by pytest itself via pyproject.toml,
+#     so there is no separate coverage gate here.
+#
+# Required secrets: none.
+
+name: CI
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "**.py"
+      - "src/padmap/profiles/*.json"
+      - "requirements*.txt"
+      - "pyproject.toml"
+      - ".github/workflows/ci.yml"
+  push:
+    branches: ["main"]
+    paths:
+      - "**.py"
+      - "src/padmap/profiles/*.json"
+      - "requirements*.txt"
+      - "pyproject.toml"
+      - ".github/workflows/ci.yml"
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    name: Lint and test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest and newest Python the project claims to support.
+        python-version: ["3.10", "3.12"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+          # Pinned lint/test tools live in requirements-dev.txt so they are
+          # installed once and cached, not re-resolved per step.
+          cache-dependency-path: |
+            requirements-dev.txt
+            pyproject.toml
+
+      - name: Install padmap and its dev toolchain
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install -r requirements-dev.txt
+
+      - name: Lint with ruff
+        run: ruff check .
+
+      - name: Check formatting with ruff
+        run: ruff format --check .
+
+      - name: Test with pytest
+        # The suite runs entirely on fakes — no controller, no display — so it
+        # needs nothing beyond a plain runner.
+        run: pytest
