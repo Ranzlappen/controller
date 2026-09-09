@@ -1,0 +1,44 @@
+{
+  "name": "Desktop",
+  "description": "Drive the whole desktop from the couch: left stick moves the pointer, right stick scrolls.",
+  "poll_hz": 120,
+  "device": {
+    "match": "xbox"
+  },
+  "buttons": {
+    "a": "mouse:left",
+    "b": "mouse:right",
+    "x": "key:enter",
+    "y": "key:esc",
+    "lb": "key:alt+left",
+    "rb": "key:alt+right",
+    "back": "special:toggle_pause",
+    "start": "key:cmd",
+    "ls": "key:space",
+    "rs": "mouse:middle"
+  },
+  "dpad": {
+    "up": { "action": "key:up", "turbo": 12 },
+    "down": { "action": "key:down", "turbo": 12 },
+    "left": { "action": "key:left", "turbo": 12 },
+    "right": { "action": "key:right", "turbo": 12 }
+  },
+  "triggers": {
+    "lt": { "action": "key:media_volume_down", "threshold": 0.4, "turbo": 8 },
+    "rt": { "action": "key:media_volume_up", "threshold": 0.4, "turbo": 8 }
+  },
+  "sticks": {
+    "left": {
+      "mode": "mouse",
+      "speed": 900,
+      "deadzone": 0.15,
+      "curve": 2.0
+    },
+    "right": {
+      "mode": "scroll",
+      "speed": 12,
+      "deadzone": 0.25,
+      "curve": 1.5
+    }
+  }
+}

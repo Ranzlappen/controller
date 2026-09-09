@@ -1,0 +1,47 @@
+{
+  "name": "FPS",
+  "description": "Keyboard-and-mouse shooter layout: left stick is WASD, right stick aims, triggers shoot.",
+  "poll_hz": 200,
+  "device": {
+    "match": "xbox"
+  },
+  "buttons": {
+    "a": "key:space",
+    "b": "key:ctrl",
+    "x": "key:r",
+    "y": "key:e",
+    "lb": "key:q",
+    "rb": "key:f",
+    "back": "special:toggle_pause",
+    "start": "key:esc",
+    "ls": { "action": "key:shift", "toggle": true },
+    "rs": "key:v"
+  },
+  "dpad": {
+    "up": "key:1",
+    "down": "key:2",
+    "left": "key:3",
+    "right": "key:4"
+  },
+  "triggers": {
+    "lt": { "action": "mouse:right", "threshold": 0.3 },
+    "rt": { "action": "mouse:left", "threshold": 0.3 }
+  },
+  "sticks": {
+    "left": {
+      "mode": "keys",
+      "threshold": 0.5,
+      "deadzone": 0.2,
+      "up": "key:w",
+      "down": "key:s",
+      "left": "key:a",
+      "right": "key:d"
+    },
+    "right": {
+      "mode": "mouse",
+      "speed": 1400,
+      "deadzone": 0.12,
+      "curve": 2.2
+    }
+  }
+}

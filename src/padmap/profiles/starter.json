@@ -1,0 +1,47 @@
+{
+  "name": "My profile",
+  "description": "Starting point written by `padmap init`. Edit freely, then run: padmap run -p <this file>",
+  "poll_hz": 120,
+  "device": {
+    "match": "xbox",
+    "trigger_mode": "auto",
+    "layout": {}
+  },
+  "buttons": {
+    "a": "mouse:left",
+    "b": "mouse:right",
+    "x": "key:enter",
+    "y": "key:esc",
+    "lb": "scroll:up",
+    "rb": "scroll:down",
+    "back": "special:toggle_pause",
+    "start": "text:hello from padmap",
+    "ls": "noop",
+    "rs": "noop"
+  },
+  "dpad": {
+    "up": "key:up",
+    "down": "key:down",
+    "left": "key:left",
+    "right": "key:right"
+  },
+  "triggers": {
+    "lt": { "action": "key:page_up", "threshold": 0.5, "turbo": 6 },
+    "rt": { "action": "key:page_down", "threshold": 0.5, "turbo": 6 }
+  },
+  "sticks": {
+    "left": {
+      "mode": "mouse",
+      "speed": 900,
+      "deadzone": 0.15,
+      "curve": 2.0,
+      "invert_x": false,
+      "invert_y": false
+    },
+    "right": {
+      "mode": "scroll",
+      "speed": 12,
+      "deadzone": 0.25
+    }
+  }
+}
