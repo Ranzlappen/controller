@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from padmap.actions import Action
@@ -24,7 +25,7 @@ from padmap.config import Binding, Layer, Profile, StickConfig
 from padmap.curves import Accelerator, Smoother, SubPixel, stick_vector
 from padmap.devices import DPAD_NAMES, ControllerSource, PadState
 
-__all__ = ["Engine"]
+__all__ = ["Engine", "EngineStatus"]
 
 #: Ceiling on the time delta used for analogue motion. Without it, a stalled
 #: poll (a laptop waking from sleep, say) would fling the cursor across the
@@ -35,9 +36,36 @@ MAX_TICK_SECONDS = 0.1
 #: Long enough to average out noise, short enough that nobody notices.
 AUTO_CENTRE_SECONDS = 0.4
 
-#: How often to ask whether the profile file changed on disk. Cheap either way,
-#: but there is no reason to stat a file 120 times a second.
-RELOAD_INTERVAL_SECONDS = 0.5
+#: How often to ask whether the profile file changed on disk, or whether a
+#: stop has been requested. Cheap either way, but there is no reason to stat a
+#: file 120 times a second.
+CONTROL_INTERVAL_SECONDS = 0.5
+
+#: How often the status callback fires. Fast enough to feel live, slow enough
+#: that redrawing a terminal line is not a measurable cost.
+STATUS_INTERVAL_SECONDS = 0.125
+
+
+@dataclass(frozen=True)
+class EngineStatus:
+    """A snapshot of what the engine is doing, for status displays.
+
+    Returned by value so a display can render it without reaching into engine
+    internals, and so the render can happen on another thread.
+    """
+
+    profile: str
+    paused: bool
+    layers: tuple[str, ...]
+    precision: bool
+    events: int
+    drift: dict[str, float]
+    settling: bool
+
+    @property
+    def worst_drift(self) -> float:
+        """The largest rest-position offset being corrected for."""
+        return max((abs(value) for value in self.drift.values()), default=0.0)
 
 
 class Engine:
@@ -52,6 +80,8 @@ class Engine:
         sleep: Callable[[float], None] = time.sleep,
         on_status: Callable[[str], None] | None = None,
         reload_source: Callable[[], Profile | None] | None = None,
+        stop_check: Callable[[], bool] | None = None,
+        on_frame: Callable[[EngineStatus], None] | None = None,
     ) -> None:
         self.profile = profile
         self.controller = controller
@@ -60,6 +90,17 @@ class Engine:
         self._sleep = sleep
         self._on_status = on_status
         self._reload_source = reload_source
+        self._stop_check = stop_check
+        #: Called with an :class:`EngineStatus` a few times a second. Public so
+        #: a display that needs the engine to exist first can attach later.
+        self.on_frame = on_frame
+        # Requests from other threads (the tray) land here and are applied by
+        # the loop itself. Mutating engine state from a menu callback while the
+        # loop is mid-tick would race against keys being pressed.
+        self._pending_pause: bool | None = None
+        self._pending_profile: Profile | None = None
+        self._events = 0
+        self._next_status = 0.0
 
         self.running = False
         self.paused = False
@@ -89,7 +130,7 @@ class Engine:
         self._measured_centres: dict[str, float] = {}
         self._centre_sampler: CentreSampler | None = None
         self._centre_deadline: float | None = None
-        self._next_reload_check: float | None = None
+        self._next_control_check: float | None = None
 
     # --- Public API ----------------------------------------------------------
 
@@ -100,6 +141,7 @@ class Engine:
             while self.running:
                 started = self._clock()
                 self.tick(started)
+                self._emit_status(started)
                 remaining = (1.0 / self.profile.poll_hz) - (self._clock() - started)
                 if remaining > 0:
                     self._sleep(remaining)
@@ -111,12 +153,51 @@ class Engine:
         """Ask :meth:`run` to finish after the current tick."""
         self.running = False
 
+    def request_reload(self) -> bool:
+        """Re-read the profile at the next control poll, changed or not.
+
+        The reload source normally only reports an *edited* file, which is the
+        right default for a watcher but wrong for someone clicking "Reload".
+        Sources may offer a ``force()`` to override that; ones that do not
+        simply re-check, and this returns False so a caller can say as much.
+        """
+        if self._reload_source is None:
+            return False
+        force = getattr(self._reload_source, "force", None)
+        if callable(force):
+            force()
+        self._next_control_check = 0.0
+        return True
+
+    def request_pause(self, paused: bool) -> None:
+        """Ask for pause/resume from another thread; applied on the next tick."""
+        self._pending_pause = paused
+
+    def request_profile(self, profile: Profile) -> None:
+        """Ask for a profile swap from another thread; applied on the next tick."""
+        self._pending_profile = profile
+
+    def _apply_pending(self) -> None:
+        """Carry out anything another thread asked for, on the loop's own thread."""
+        pending_pause, self._pending_pause = self._pending_pause, None
+        if pending_pause is not None:
+            self.set_paused(pending_pause)
+        pending_profile, self._pending_profile = self._pending_profile, None
+        if pending_profile is not None:
+            self.adopt_profile(pending_profile)
+
+    @property
+    def can_reload(self) -> bool:
+        """Whether this session has anywhere to reload a profile from."""
+        return self._reload_source is not None
+
     def tick(self, now: float, state: PadState | None = None) -> None:
         """Process exactly one poll of the controller."""
         if state is None:
             state = self.controller.poll()
 
-        self._maybe_reload(now)
+        self._apply_pending()
+        self._poll_control(now)
 
         delta = 0.0 if self._last_tick is None else min(now - self._last_tick, MAX_TICK_SECONDS)
         self._last_tick = now
@@ -155,6 +236,25 @@ class Engine:
         if paused:
             self.release_all()
         self._status("paused — output suppressed" if paused else "resumed")
+
+    def status(self) -> EngineStatus:
+        """A by-value snapshot of what the engine is currently doing."""
+        return EngineStatus(
+            profile=self.profile.name,
+            paused=self.paused,
+            layers=tuple(self._active_layers),
+            precision=self.precision_held,
+            events=self._events,
+            drift=dict(self._measured_centres),
+            settling=self._centre_deadline is not None and self._centre_deadline != 0.0,
+        )
+
+    def _emit_status(self, now: float) -> None:
+        """Hand a snapshot to the display, at most a few times a second."""
+        if self.on_frame is None or now < self._next_status:
+            return
+        self._next_status = now + STATUS_INTERVAL_SECONDS
+        self.on_frame(self.status())
 
     @property
     def active_layers(self) -> tuple[str, ...]:
@@ -222,22 +322,43 @@ class Engine:
 
     # --- Hot reload ----------------------------------------------------------
 
-    def _maybe_reload(self, now: float) -> None:
-        """Swap in an edited profile, if the caller says one is waiting."""
-        if self._reload_source is None:
+    def _poll_control(self, now: float) -> None:
+        """Check the out-of-band controls: has a stop been asked for, or an edit?
+
+        Both are rate-limited together. They are the two things that reach in
+        from outside the process, and neither is worth a filesystem call on
+        every one of a hundred-plus ticks a second.
+        """
+        if self._reload_source is None and self._stop_check is None:
             return
-        if self._next_reload_check is None:
+        if self._next_control_check is None:
             # Nothing can have changed between building the engine and its
             # first tick, so the first check is one interval away, not now.
-            self._next_reload_check = now + RELOAD_INTERVAL_SECONDS
+            self._next_control_check = now + CONTROL_INTERVAL_SECONDS
             return
-        if now < self._next_reload_check:
+        if now < self._next_control_check:
             return
-        self._next_reload_check = now + RELOAD_INTERVAL_SECONDS
+        self._next_control_check = now + CONTROL_INTERVAL_SECONDS
+
+        if self._stop_check is not None and self._stop_check():
+            self._status("stop requested")
+            self.stop()
+            return
+
+        if self._reload_source is None:
+            return
         replacement = self._reload_source()
         if replacement is None:
             return
+        self.adopt_profile(replacement)
+        self._status(f"reloaded profile: {replacement.name} ({replacement.binding_count} bindings)")
 
+    def adopt_profile(self, profile: Profile) -> None:
+        """Swap in a different profile, letting go of everything held first.
+
+        Must run on the loop's thread — :meth:`request_profile` is the way in
+        from anywhere else.
+        """
         self.release_all()
         self._precision_slots.clear()
         self._layer_slots.clear()
@@ -247,12 +368,11 @@ class Engine:
         self._accelerators.clear()
         self._carry.clear()
 
-        self.profile = replacement
-        # Keep the rest positions measured at startup — the file changed, the
-        # hardware did not, and re-centring mid-session would need the user to
-        # take their thumbs off at exactly the wrong moment.
-        self._calibration = replacement.device.calibration.with_centres(self._measured_centres)
-        self._status(f"reloaded profile: {replacement.name} ({replacement.binding_count} bindings)")
+        self.profile = profile
+        # Keep the rest positions measured at startup — the profile changed,
+        # the hardware did not, and re-centring mid-session would need the user
+        # to take their thumbs off at exactly the wrong moment.
+        self._calibration = profile.device.calibration.with_centres(self._measured_centres)
 
     # --- Input decomposition -------------------------------------------------
 
@@ -402,21 +522,27 @@ class Engine:
 
     def _fire_once(self, action: Action) -> None:
         if action.kind == "text":
+            self._events += 1
             self.backend.type_text(action.text)
         elif action.kind == "scroll":
             dx, dy = _scroll_step(action.direction)
+            self._events += 1
             self.backend.scroll(dx, dy)
 
     def _press(self, action: Action) -> None:
         if action.kind == "key":
+            self._events += 1
             self.backend.key_down(action.keys)
         elif action.kind == "mouse":
+            self._events += 1
             self.backend.mouse_down(action.button)
 
     def _unpress(self, action: Action) -> None:
         if action.kind == "key":
+            self._events += 1
             self.backend.key_up(action.keys)
         elif action.kind == "mouse":
+            self._events += 1
             self.backend.mouse_up(action.button)
 
     def _release(self, slot: str) -> None:
@@ -516,12 +642,14 @@ class Engine:
         if stick.mode == "mouse":
             dx, dy = carry.take(x * speed * delta, y * speed * delta)
             if dx or dy:
+                self._events += 1
                 self.backend.mouse_move(dx, dy)
         else:
             # pynput scrolls with positive y meaning "up", the opposite of
             # the stick's y-up-is-negative convention.
             dx, dy = carry.take(x * speed * delta, -y * speed * delta)
             if dx or dy:
+                self._events += 1
                 self.backend.scroll(dx, dy)
 
     def _stick_directions(
