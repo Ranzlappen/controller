@@ -113,7 +113,15 @@ MOUSE_BUTTONS: frozenset[str] = frozenset({"left", "middle", "right"})
 SCROLL_DIRECTIONS: frozenset[str] = frozenset({"up", "down", "left", "right"})
 
 #: Commands handled by the engine itself rather than by an output backend.
-SPECIAL_COMMANDS: frozenset[str] = frozenset({"toggle_pause", "quit"})
+#: ``layer`` takes an argument (``special:layer:shift``); the rest do not.
+SPECIAL_COMMANDS: frozenset[str] = frozenset({"toggle_pause", "quit", "precision", "layer"})
+
+#: Specials that act while held rather than firing once on press. These never
+#: reach an output backend — the engine consumes them.
+MODIFIER_COMMANDS: frozenset[str] = frozenset({"precision", "layer"})
+
+#: Specials that take a ``:argument`` suffix.
+PARAMETERISED_COMMANDS: frozenset[str] = frozenset({"layer"})
 
 # Action kinds.
 KEY = "key"
@@ -141,6 +149,7 @@ class Action:
     direction: str = ""
     text: str = ""
     command: str = ""
+    argument: str = ""
     source: str = ""
 
     @property
@@ -162,6 +171,15 @@ class Action:
     def is_repeatable(self) -> bool:
         """True when holding the input should keep re-firing the action."""
         return self.kind == SCROLL
+
+    @property
+    def is_modifier(self) -> bool:
+        """True for specials that apply while held (``precision``, ``layer``).
+
+        The engine tracks these itself; they never reach an output backend, and
+        unlike other specials they act on release as well as on press.
+        """
+        return self.kind == SPECIAL and self.command in MODIFIER_COMMANDS
 
     def __str__(self) -> str:
         return self.source or self.kind
@@ -210,6 +228,29 @@ def _parse_member(payload: str, allowed: frozenset[str], label: str, source: str
     return value
 
 
+def _parse_special(payload: str, source: str) -> Action:
+    """Parse a special, which may carry an argument (``special:layer:shift``)."""
+    command, _, argument = payload.partition(":")
+    command = _parse_member(command, SPECIAL_COMMANDS, "special command", source)
+    argument = argument.strip()
+
+    if command in PARAMETERISED_COMMANDS:
+        if not argument:
+            raise ActionError(
+                f"{source!r} needs a name, e.g. 'special:{command}:shift'. The same "
+                f"name is the key under the profile's 'layers' section."
+            )
+        if not all(ch.isalnum() or ch in "_-" for ch in argument):
+            raise ActionError(
+                f"invalid {command} name {argument!r} in {source!r} — use letters, "
+                "digits, '-' or '_'."
+            )
+    elif argument:
+        raise ActionError(f"special command {command!r} takes no argument, got {argument!r}")
+
+    return Action(kind=SPECIAL, command=command, argument=argument.lower(), source=source)
+
+
 def parse_action(spec: str | None) -> Action:
     """Parse one action string into an :class:`Action`.
 
@@ -255,11 +296,7 @@ def parse_action(spec: str | None) -> Action:
         # Whitespace is meaningful here, so the raw payload is kept as typed.
         return Action(kind=TEXT, text=payload, source=source)
     if kind == SPECIAL:
-        return Action(
-            kind=SPECIAL,
-            command=_parse_member(payload, SPECIAL_COMMANDS, "special command", source),
-            source=source,
-        )
+        return _parse_special(payload.strip(), source)
 
     raise ActionError(
         f"unknown action kind {kind!r} in {source!r}. "
