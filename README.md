@@ -17,7 +17,7 @@ padmap reads an Xbox One (or Xbox Series / Xbox 360) controller and turns it int
 
 Mappings live in small JSON **profiles** you can read and edit by hand. Three are bundled — `desktop`, `fps` and a `starter` you copy and change.
 
-It is deliberately small: two runtime dependencies, one command, no daemon, no tray icon, no GUI editor. `padmap monitor` tells you what your pad reports; the JSON tells padmap what to do about it.
+It is deliberately small: two runtime dependencies, one command, no daemon, no tray icon, no GUI editor. `padmap monitor` tells you what your pad reports, `padmap calibrate` measures what your pad's sticks actually do, and the JSON tells padmap what to do about it.
 
 ---
 
@@ -25,12 +25,16 @@ It is deliberately small: two runtime dependencies, one command, no daemon, no t
 
 | I want to... | Do this |
 | --- | --- |
+| **Stop the pointer drifting on its own** | `padmap calibrate --write mine.json` |
+| **Tune the feel without restarting** | `padmap run -w -p mine.json` — edits apply live |
 | See what my controller reports | `padmap devices`, then `padmap monitor` |
 | Try it without affecting my desktop | `padmap run --dry-run` |
 | Control the desktop from the couch | `padmap run -p desktop` |
 | Play a keyboard game on the pad | `padmap run -p fps` |
 | See what a profile does | `padmap validate fps` |
 | Write my own profile | `padmap init my-profile.json`, edit, `padmap run -p my-profile.json` |
+| Move the pointer precisely | Hold **LB** — the precision modifier |
+| Reach a second set of bindings | Hold **RB** — the `nav` layer |
 | Pause without quitting | Press the **Back / View** button on the pad |
 | Stop everything | `Ctrl-C` in the terminal — every held key is released |
 | Fix a button that maps to the wrong thing | `padmap monitor` for the real index, then set it under `device.layout` |
@@ -60,6 +64,14 @@ pip install .
 padmap devices          # is the pad seen at all?
 padmap run --dry-run    # watch what would be sent — nothing reaches the desktop
 padmap run              # for real; Back pauses, Ctrl-C stops
+```
+
+**If the pointer drifts, or the sticks feel vague, calibrate before anything else:**
+
+```
+padmap init mine.json                      # your own copy to edit
+padmap calibrate --write mine.json         # measure this pad's drift and travel
+padmap run -w -p mine.json                 # -w reloads the file as you edit it
 ```
 
 `padmap run` defaults to the `desktop` profile. Press **Back / View** at any time to suspend output without quitting — useful when you need the real keyboard for a moment.
@@ -121,6 +133,8 @@ A profile is a JSON file. Every controller input maps to an **action string**:
 | `scroll:<dir>` | Scrolls repeatedly while held (`up`, `down`, `left`, `right`) | `scroll:down` |
 | `text:<string>` | Types a string once per press | `text:gg wp` |
 | `special:toggle_pause` | Suspends and resumes all output | — |
+| `special:precision` | While held, slows every stick to its `precision` factor | — |
+| `special:layer:<name>` | While held, switches to a layer from the `layers` section | `special:layer:nav` |
 | `special:quit` | Stops padmap from the pad | — |
 | `noop` | Nothing — switches an input off without deleting the line | — |
 
@@ -143,12 +157,89 @@ Write a binding as an object instead of a string to add:
 
 | Mode | Behaviour | Tuning |
 | --- | --- | --- |
-| `mouse` | Moves the pointer | `speed` (pixels/second at full deflection), `deadzone`, `curve` |
-| `scroll` | Scrolls the window | `speed` (clicks/second), `deadzone`, `curve` |
+| `mouse` | Moves the pointer | everything below |
+| `scroll` | Scrolls the window | `speed` is clicks/second here, not pixels |
 | `keys` | Presses `up`/`down`/`left`/`right` bindings past `threshold` — the WASD case | `threshold`, `deadzone` |
 | `off` | Ignores the stick | — |
 
-`curve` shapes the response: `1.0` is linear, `2.0` (the default) gives a slow, precise centre and a fast outer range, below `1.0` is twitchier. `deadzone` is **radial** — measured on the stick's distance from centre, not per axis — so diagonals don't snap to the nearest axis.
+Every dial, and what it is actually for:
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| `speed` | 900 | Pixels/second (or scroll clicks/second) at full deflection. |
+| `deadzone` | 0.15 | How far you must push before anything happens. **Radial** — measured on the stick's distance from centre, so diagonals don't snap to the nearest axis. With calibration you can drop this to ~0.08. |
+| `outer_deadzone` | 1.0 | The deflection that counts as fully pushed. Lower it if a worn stick can't reach the rail and never hits full speed. |
+| `curve` | 2.0 | `1.0` is linear; `2.0` gives a slow, precise centre with a fast outer range; below `1.0` is twitchier. |
+| `smoothing` | 0.35 | Averages the stick over a short window. This is what stops the pointer wobbling while you hold a direction. `0` disables it. |
+| `accel` | 1.0 (off) | Peak speed multiplier while the stick is held out near its edge. `2.5` means travelling across the screen is 2.5× faster than the first moment of a nudge. |
+| `accel_time` | 0.6 | Seconds to reach full `accel`. Decay back to normal is 3× faster, so a brief correction returns you to precision. |
+| `precision` | 0.25 | Speed multiplier while a `special:precision` binding is held. |
+| `invert_x` / `invert_y` | false | Flip an axis. |
+
+**Speed, accel and precision are meant to be used together.** One flat speed forces a bad choice: slow enough to hit a checkbox means crawling across the screen, fast enough to cross the screen means overshooting everything. Holding the stick out is an unambiguous "I am travelling" so `accel` builds; holding the precision button is an unambiguous "I am aiming" so everything slows. The bundled `desktop` profile ships `speed: 1000`, `accel: 2.5` and `precision: 0.22`, which spans roughly 220 to 2500 px/s on one stick.
+
+### Drift, and why a deadzone isn't enough
+
+A worn stick doesn't rest at zero. It rests at, say, `x = +0.18`. A deadzone is centred on zero, so the only way it can silence that is to be bigger than 0.18 — which throws away the same 0.18 of travel on the side that was never wrong. You buy "it stopped drifting" with "and now fine control is worse everywhere".
+
+Calibration fixes it properly: measure where the stick actually rests, and subtract it.
+
+```
+padmap calibrate --write mine.json
+```
+
+Two phases, about ten seconds: let go of the sticks while it measures the rest position, then roll both sticks around their edge while it measures how far they really travel. It writes a block like this:
+
+```json
+"device": {
+  "auto_centre": true,
+  "calibration": {
+    "left_x":  { "centre": 0.18, "low": -0.95, "high": 0.90 },
+    "left_y":  { "centre": -0.07, "low": -0.92, "high": 0.94 }
+  }
+}
+```
+
+Each side of each axis is rescaled independently, so an off-centre rest costs you nothing on the good side, and a stick that only reaches 0.90 still gets to full speed.
+
+**`auto_centre` is on by default**, so even with no stored calibration padmap spends the first 0.4 s of a run measuring where your sticks are resting and corrects for it. Pointer motion is suppressed for that fraction of a second; buttons work immediately. If you happen to be holding a stick it says so and carries on uncorrected rather than baking your thumb position in as "centre". Set `"auto_centre": false` to trust the stored numbers only.
+
+Drift also shows up as *skew*: with a `y` drift of −0.07, pushing straight right also creeps upward — about 65 px per second on a 1000 px/s profile. Calibration takes that to ~1 px.
+
+### Layers
+
+An Xbox pad has ten buttons, which runs out fast. A **layer** is a second set of bindings you reach by holding a button — xpadder calls these shift sets.
+
+```json
+"buttons": {
+  "rb": "special:layer:nav",
+  "a": "mouse:left"
+},
+"layers": {
+  "nav": {
+    "description": "media and browser navigation",
+    "buttons": { "a": "key:media_play_pause" },
+    "dpad": { "left": "key:alt+left", "right": "key:alt+right" }
+  }
+}
+```
+
+Hold **RB** and `A` becomes play/pause; let go and it is left-click again. A layer overrides only the inputs it names — everything else keeps doing what the base profile says — and it can bind inputs the base leaves alone, or replace a whole stick (so one layer can turn the pointer stick into a scroll stick).
+
+Two rules, both enforced when the profile loads:
+
+- **Specials live in the base profile only.** A layer cannot contain `special:` anything. Otherwise "which layer am I in" could depend on which layer you are in, which has no good answer.
+- **Every layer must be reachable, and every layer switch must point at a real layer.** A dangling `special:layer:typo` would just silently do nothing at runtime, which is indistinguishable from a broken button.
+
+If a layer switch changes what a *held* button means, padmap releases the outgoing binding before pressing the new one — no stuck keys.
+
+### Tuning it while it runs
+
+```
+padmap run -w -p mine.json
+```
+
+`-w` / `--watch` reloads the profile whenever you save the file. Change `speed`, save, feel the difference, repeat — no restarting, no losing your place. A broken edit doesn't stop the session: padmap prints the error and keeps running the last profile that worked.
 
 ### When a button maps to the wrong thing
 
@@ -202,7 +293,8 @@ controller/
 ├── src/padmap/
 │   ├── actions.py            ← the action grammar ("key:w", "mouse:left")
 │   ├── config.py             ← profile schema, loading, validation
-│   ├── curves.py             ← deadzones, response curves, sub-pixel motion
+│   ├── curves.py             ← deadzones, curves, smoothing, acceleration
+│   ├── calibration.py        ← measuring stick drift and travel
 │   ├── devices.py            ← controller discovery and polling (pygame)
 │   ├── backends.py           ← keyboard/mouse output (pynput) + a recording fake
 │   ├── engine.py             ← the mapping loop: state in, events out

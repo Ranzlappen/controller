@@ -61,23 +61,59 @@ Use `"unipolar"` for the other convention, or `"auto"` (the default) to go back 
 
 ## The pointer drifts when I'm not touching the stick
 
-Worn sticks rest slightly off-centre. Raise the deadzone until it stops:
+Calibrate. Do not reach for the deadzone — a deadzone is centred on zero and a worn stick is not, so hiding 0.18 of drift costs you 0.18 of travel on the side that was never wrong.
 
-```json
-"sticks": { "left": { "mode": "mouse", "deadzone": 0.25 } }
+```
+padmap init mine.json
+padmap calibrate --write mine.json
+padmap run -p mine.json
 ```
 
-`padmap monitor` shows the resting axis values — a stick reading `0.08` at rest needs a deadzone above `0.08`.
+padmap already auto-centres at startup, so if it is still drifting after that, one of these is true:
+
+- **You were touching a stick when it started.** Auto-centring refuses a reading that looks held or moving, and says so in the terminal. Let go and restart.
+- **`auto_centre` is off** in your profile. Set it back to `true`, or run `padmap calibrate` and store real numbers.
+- **The drift is on a stick you never centre-calibrated, and the stored calibration overrides it.** Re-run `padmap calibrate --write`.
+
+Drift also shows up as *skew* — push straight right and the pointer creeps upward. That is the other axis drifting, and calibration fixes it the same way.
+
+## The pointer wobbles while I hold a direction
+
+That is stick noise reaching the pointer. Raise `smoothing`:
+
+```json
+"sticks": { "left": { "mode": "mouse", "smoothing": 0.5 } }
+```
+
+`0` is off, `0.35` is the default, above `0.6` starts to feel laggy rather than steady.
 
 ## The pointer is too fast, too slow, or too twitchy
 
-Three separate dials, and they do different things:
+Five dials, and they do genuinely different things. Change one at a time — and run with `-w` so you can edit the file and feel the change without restarting.
 
-- **`speed`** — pixels per second at full deflection. Raise it to cover more screen.
-- **`curve`** — how the middle of the range behaves. `1.0` is linear; `2.0` (the default) gives a slow, precise centre and a fast outer range; below `1.0` is twitchier near centre. If fine positioning is hard but big movements are fine, raise the curve rather than lowering the speed.
-- **`deadzone`** — how far you must push before anything happens.
+- **`speed`** — pixels per second at full deflection. The baseline.
+- **`accel`** — how much faster it gets while you hold the stick out. If crossing the screen is slow *but* fine positioning is fine, raise this, not `speed`.
+- **`precision`** — how much slower it gets while a `special:precision` button is held. If fine positioning is hard *but* travel is fine, lower this and bind the modifier.
+- **`curve`** — shapes the middle of the range. `1.0` linear, `2.0` (default) slow and precise near centre, below `1.0` twitchier.
+- **`smoothing`** — steadiness, not speed. See above.
+
+If it feels *twitchy right off centre*, that is usually drift rather than tuning — calibrate first.
 
 Raising `poll_hz` (up to 200 or so) makes motion smoother, not faster.
+
+## My profile stops working when I hold a button
+
+You are probably in a layer. A button bound to `special:layer:<name>` swaps in a second set of bindings while held — `padmap validate <profile>` prints every layer and what it overrides. The bundled `desktop` profile puts a `nav` layer on **RB** and the precision modifier on **LB**.
+
+## Editing the profile means restarting every time
+
+It doesn't:
+
+```
+padmap run -w -p mine.json
+```
+
+`-w` reloads on save. A broken edit is printed and ignored, and the last working profile keeps running.
 
 ## A key is stuck down
 
@@ -94,6 +130,8 @@ Common ones:
 - A trailing comma, or a comment. Profiles are strict JSON; `//` comments are not allowed.
 - `turbo` and `toggle` on the same binding — deliberately rejected, since a latched auto-fire is a footgun.
 - A key name padmap doesn't know. The error lists every valid name.
+- `special:layer:<name>` pointing at a layer that isn't defined, or a layer nothing switches to. Both are rejected on purpose: at runtime a dangling layer switch is silent, which looks exactly like a broken button.
+- A `special:` action inside a layer. Specials live in the base profile only.
 
 ## Still stuck
 
