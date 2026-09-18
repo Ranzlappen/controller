@@ -22,9 +22,17 @@ def run_states(engine: Engine, states, step: float = 0.01, start: float = 0.0) -
 
 
 def engine_for(profile_data: dict, backend: RecordingBackend | None = None) -> tuple:
-    """Build an engine from an inline profile document."""
+    """Build an engine from an inline profile document.
+
+    Auto-centring is switched off unless the test supplies its own ``device``
+    block. It suppresses pointer motion for the first 0.4 s while it measures
+    where the sticks rest, which would otherwise silently swallow the opening
+    ticks of every test about pointer maths. The tests that are *about*
+    auto-centring pass their own device block and get the real behaviour.
+    """
     backend = backend or RecordingBackend()
     controller = FakeController()
+    profile_data = {"device": {"auto_centre": False}, **profile_data}
     return Engine(Profile.from_dict(profile_data), controller, backend), backend, controller
 
 
@@ -117,7 +125,17 @@ def test_a_trigger_fires_only_past_its_threshold() -> None:
 
 def test_stick_in_mouse_mode_moves_the_pointer_at_the_configured_speed() -> None:
     engine, backend, _ = engine_for(
-        {"sticks": {"left": {"mode": "mouse", "speed": 1000, "deadzone": 0.1, "curve": 1.0}}}
+        {
+            "sticks": {
+                "left": {
+                    "mode": "mouse",
+                    "speed": 1000,
+                    "deadzone": 0.1,
+                    "curve": 1.0,
+                    "smoothing": 0,
+                }
+            }
+        }
     )
     engine.tick(0.0, make_state())
     engine.tick(0.1, make_state(left_x=1.0))
@@ -134,7 +152,17 @@ def test_pointer_motion_is_zero_inside_the_deadzone() -> None:
 
 def test_stick_up_moves_the_pointer_up() -> None:
     engine, backend, _ = engine_for(
-        {"sticks": {"left": {"mode": "mouse", "speed": 500, "deadzone": 0.0, "curve": 1.0}}}
+        {
+            "sticks": {
+                "left": {
+                    "mode": "mouse",
+                    "speed": 500,
+                    "deadzone": 0.0,
+                    "curve": 1.0,
+                    "smoothing": 0,
+                }
+            }
+        }
     )
     engine.tick(0.0, make_state())
     engine.tick(0.1, make_state(left_y=-1.0))
@@ -143,7 +171,17 @@ def test_stick_up_moves_the_pointer_up() -> None:
 
 def test_stick_in_scroll_mode_scrolls_up_when_pushed_up() -> None:
     engine, backend, _ = engine_for(
-        {"sticks": {"right": {"mode": "scroll", "speed": 10, "deadzone": 0.0, "curve": 1.0}}}
+        {
+            "sticks": {
+                "right": {
+                    "mode": "scroll",
+                    "speed": 10,
+                    "deadzone": 0.0,
+                    "curve": 1.0,
+                    "smoothing": 0,
+                }
+            }
+        }
     )
     engine.tick(0.0, make_state())
     for tick in range(1, 11):  # 10 clicks/s over 1.0 s
@@ -191,7 +229,17 @@ def test_an_off_stick_does_nothing() -> None:
 def test_a_stalled_poll_does_not_fling_the_pointer() -> None:
     """A big gap between ticks is clamped, so waking from sleep doesn't teleport the cursor."""
     engine, backend, _ = engine_for(
-        {"sticks": {"left": {"mode": "mouse", "speed": 1000, "deadzone": 0.0, "curve": 1.0}}}
+        {
+            "sticks": {
+                "left": {
+                    "mode": "mouse",
+                    "speed": 1000,
+                    "deadzone": 0.0,
+                    "curve": 1.0,
+                    "smoothing": 0,
+                }
+            }
+        }
     )
     engine.tick(0.0, make_state())
     engine.tick(60.0, make_state(left_x=1.0))
@@ -314,3 +362,305 @@ def test_run_polls_the_controller_and_releases_on_exit() -> None:
     assert backend.log() == ["key_down w", "key_up w"]
     assert engine.running is False
     assert slept, "the loop should sleep between polls to honour poll_hz"
+
+
+# --- Calibration and drift ---------------------------------------------------
+
+DRIFTING = {
+    "device": {"auto_centre": False, "calibration": {"left_x": {"centre": 0.12}}},
+    "sticks": {"left": {"mode": "mouse", "speed": 1000, "deadzone": 0.05, "smoothing": 0}},
+}
+
+
+def test_a_calibrated_drifting_stick_does_not_move_the_pointer() -> None:
+    """The headline fix: a stick resting at +0.12 must not creep the cursor."""
+    engine, backend, _ = engine_for(DRIFTING)
+    engine.tick(0.0, make_state(left_x=0.12))
+    for tick in range(1, 20):
+        engine.tick(tick * 0.05, make_state(left_x=0.12))
+    assert backend.log() == []
+
+
+def test_the_same_drift_without_calibration_does_creep() -> None:
+    """Proves the test above is actually testing calibration, not the deadzone."""
+    engine, backend, _ = engine_for(
+        {
+            "device": {"auto_centre": False},
+            "sticks": {"left": {"mode": "mouse", "speed": 1000, "deadzone": 0.05, "smoothing": 0}},
+        }
+    )
+    engine.tick(0.0, make_state(left_x=0.12))
+    for tick in range(1, 20):
+        engine.tick(tick * 0.05, make_state(left_x=0.12))
+    assert backend.log() != []
+
+
+def test_calibration_still_reaches_full_speed_the_other_way() -> None:
+    """Calibration must not cost travel on the side that was never drifting."""
+    engine, backend, _ = engine_for(DRIFTING)
+    engine.tick(0.0, make_state())
+    engine.tick(0.1, make_state(left_x=-1.0))
+    assert backend.log() == ["mouse_move -100,0"]
+
+
+def test_auto_centring_measures_rest_and_suppresses_motion_while_it_does() -> None:
+    engine, backend, _ = engine_for(
+        {
+            "device": {"auto_centre": True},
+            "sticks": {"left": {"mode": "mouse", "speed": 1000, "deadzone": 0.05, "smoothing": 0}},
+        }
+    )
+    # A stick resting off-centre for the whole sampling window.
+    for tick in range(40):
+        engine.tick(tick * 0.02, make_state(left_x=0.12))
+    assert backend.log() == [], "no motion while measuring"
+    assert engine.calibration.axes["left_x"].centre == pytest.approx(0.12, abs=0.01)
+
+    # And now that drift is gone for good.
+    for tick in range(40, 80):
+        engine.tick(tick * 0.02, make_state(left_x=0.12))
+    assert backend.log() == []
+
+
+def test_auto_centring_refuses_a_held_stick_and_says_so() -> None:
+    messages: list[str] = []
+    controller, backend = FakeController(), RecordingBackend()
+    profile = Profile.from_dict({"device": {"auto_centre": True}, "buttons": {"a": "key:w"}})
+    engine = Engine(profile, controller, backend, on_status=messages.append)
+    for tick in range(40):
+        engine.tick(tick * 0.02, make_state(left_x=0.95))
+    assert any("auto-centre skipped" in message for message in messages)
+    assert engine.calibration.is_empty
+
+
+def test_buttons_still_work_while_auto_centring() -> None:
+    """Only pointer motion waits for the measurement; buttons respond at once."""
+    engine, backend, _ = engine_for({"device": {"auto_centre": True}, "buttons": {"a": "key:w"}})
+    engine.tick(0.0, make_state())
+    engine.tick(0.01, make_state(a=True))
+    assert backend.log() == ["key_down w"]
+
+
+# --- Smoothing and acceleration ----------------------------------------------
+
+
+def test_smoothing_ramps_the_pointer_up_instead_of_jumping() -> None:
+    engine, backend, _ = engine_for(
+        {"sticks": {"left": {"mode": "mouse", "speed": 1000, "deadzone": 0.0, "curve": 1.0}}}
+    )
+    engine.tick(0.0, make_state())
+    engine.tick(0.1, make_state(left_x=1.0))
+    first = int(backend.events[0].detail.split(",")[0])
+    assert 0 < first < 100, "smoothed motion starts below the flat-out rate"
+
+
+def test_acceleration_makes_a_sustained_push_faster_than_a_brief_one() -> None:
+    profile = {
+        "sticks": {
+            "left": {
+                "mode": "mouse",
+                "speed": 500,
+                "deadzone": 0.0,
+                "curve": 1.0,
+                "smoothing": 0,
+                "accel": 4.0,
+                "accel_time": 0.5,
+            }
+        }
+    }
+    engine, backend, _ = engine_for(profile)
+    engine.tick(0.0, make_state())
+    for tick in range(1, 21):
+        engine.tick(tick * 0.05, make_state(left_x=1.0))
+    moves = [int(event.detail.split(",")[0]) for event in backend.events]
+    assert moves[-1] > moves[0] * 2, "speed should build while the stick is held out"
+
+
+def test_precision_modifier_slows_the_pointer_while_held() -> None:
+    profile = {
+        "buttons": {"lb": "special:precision"},
+        "sticks": {
+            "left": {
+                "mode": "mouse",
+                "speed": 1000,
+                "deadzone": 0.0,
+                "curve": 1.0,
+                "smoothing": 0,
+                "precision": 0.25,
+            }
+        },
+    }
+    engine, backend, _ = engine_for(profile)
+    engine.tick(0.0, make_state())
+    engine.tick(0.1, make_state(left_x=1.0))
+    full = int(backend.events[-1].detail.split(",")[0])
+
+    engine.tick(0.2, make_state(left_x=1.0, lb=True))
+    assert engine.precision_held
+    slowed = int(backend.events[-1].detail.split(",")[0])
+    assert slowed == pytest.approx(full * 0.25, abs=1)
+
+    engine.tick(0.3, make_state(left_x=1.0))
+    assert not engine.precision_held
+
+
+# --- Layers ------------------------------------------------------------------
+
+LAYERED = {
+    "device": {"auto_centre": False},
+    "buttons": {"lb": "special:layer:media", "a": "mouse:left"},
+    "layers": {"media": {"buttons": {"a": "key:media_play_pause"}}},
+}
+
+
+def test_a_layer_overrides_only_what_it_names() -> None:
+    engine, backend, _ = engine_for(LAYERED)
+    engine.tick(0.0, make_state())
+    engine.tick(0.01, make_state(a=True))
+    assert backend.log() == ["mouse_down left"]
+
+    engine.tick(0.02, make_state())
+    engine.tick(0.03, make_state(lb=True))
+    assert engine.active_layers == ("media",)
+    engine.tick(0.04, make_state(lb=True, a=True))
+    assert backend.log()[-1] == "key_down media_play_pause"
+
+
+def test_releasing_the_layer_button_closes_the_layer() -> None:
+    engine, _, _ = engine_for(LAYERED)
+    engine.tick(0.0, make_state())
+    engine.tick(0.01, make_state(lb=True))
+    assert engine.active_layers == ("media",)
+    engine.tick(0.02, make_state())
+    assert engine.active_layers == ()
+
+
+def test_switching_layers_mid_hold_releases_the_outgoing_key() -> None:
+    """Otherwise the old binding stays down with nothing left to release it."""
+    engine, backend, _ = engine_for(LAYERED)
+    engine.tick(0.0, make_state())
+    engine.tick(0.01, make_state(a=True))
+    assert backend.log() == ["mouse_down left"]
+
+    engine.tick(0.02, make_state(a=True, lb=True))
+    assert "mouse_up left" in backend.log(), "the base binding must be let go"
+    assert backend.log()[-1] == "key_down media_play_pause"
+
+
+def test_a_layer_can_bind_an_input_the_base_leaves_alone() -> None:
+    engine, backend, _ = engine_for(
+        {
+            "device": {"auto_centre": False},
+            "buttons": {"lb": "special:layer:extra"},
+            "layers": {"extra": {"buttons": {"y": "key:f5"}}},
+        }
+    )
+    engine.tick(0.0, make_state())
+    engine.tick(0.01, make_state(y=True))
+    assert backend.log() == [], "unbound in the base profile"
+    engine.tick(0.02, make_state(lb=True, y=True))
+    assert backend.log() == ["key_down f5"]
+
+
+def test_a_layer_can_replace_a_whole_stick() -> None:
+    engine, backend, _ = engine_for(
+        {
+            "device": {"auto_centre": False},
+            "buttons": {"lb": "special:layer:scrollmode"},
+            "sticks": {"left": {"mode": "mouse", "speed": 1000, "smoothing": 0, "deadzone": 0.0}},
+            "layers": {
+                "scrollmode": {
+                    "sticks": {
+                        "left": {"mode": "scroll", "speed": 10, "smoothing": 0, "deadzone": 0.0}
+                    }
+                }
+            },
+        }
+    )
+    engine.tick(0.0, make_state())
+    engine.tick(0.1, make_state(left_y=-1.0))
+    assert backend.events[-1].kind == "mouse_move"
+    engine.tick(0.2, make_state(left_y=-1.0, lb=True))
+    engine.tick(0.3, make_state(left_y=-1.0, lb=True))
+    assert backend.events[-1].kind == "scroll"
+
+
+def test_releasing_everything_clears_the_layer_state() -> None:
+    engine, _, _ = engine_for(LAYERED)
+    engine.tick(0.0, make_state())
+    engine.tick(0.01, make_state(lb=True, a=True))
+    engine.release_all()
+    assert engine._active == {}
+
+
+# --- Hot reload --------------------------------------------------------------
+
+
+def test_a_reloaded_profile_takes_effect_and_releases_what_was_held() -> None:
+    controller, backend = FakeController(), RecordingBackend()
+    messages: list[str] = []
+    replacement = Profile.from_dict(
+        {"name": "Second", "device": {"auto_centre": False}, "buttons": {"a": "key:z"}}
+    )
+    pending = [replacement]
+
+    engine = Engine(
+        Profile.from_dict(
+            {"name": "First", "device": {"auto_centre": False}, "buttons": {"a": "key:w"}}
+        ),
+        controller,
+        backend,
+        on_status=messages.append,
+        reload_source=lambda: pending.pop() if pending else None,
+    )
+    engine.tick(0.0, make_state())
+    engine.tick(0.1, make_state(a=True))
+    assert backend.log() == ["key_down w"]
+
+    # The reload check is rate-limited, so step past its interval.
+    engine.tick(1.0, make_state(a=True))
+    assert "key_up w" in backend.log(), "the old binding must not stay held"
+    assert engine.profile.name == "Second"
+    assert any("reloaded profile" in message for message in messages)
+
+    engine.tick(1.1, make_state(a=True))
+    assert backend.log()[-1] == "key_down z"
+
+
+def test_reload_is_rate_limited_not_checked_every_tick() -> None:
+    calls = {"count": 0}
+
+    def source() -> Profile | None:
+        calls["count"] += 1
+        return None
+
+    engine = Engine(
+        Profile.from_dict({"device": {"auto_centre": False}}),
+        FakeController(),
+        RecordingBackend(),
+        reload_source=source,
+    )
+    for tick in range(100):
+        engine.tick(tick * 0.01)
+    assert calls["count"] < 10, "should stat the file a couple of times a second, not 100"
+
+
+def test_reload_keeps_the_centres_measured_at_startup() -> None:
+    """The file changed; the hardware did not. Re-measuring would need idle thumbs."""
+    controller, backend = FakeController(), RecordingBackend()
+    replacement = Profile.from_dict({"name": "Second", "buttons": {"a": "key:z"}})
+    pending = [replacement]
+    engine = Engine(
+        Profile.from_dict({"name": "First", "device": {"auto_centre": True}}),
+        controller,
+        backend,
+        reload_source=lambda: pending.pop() if pending else None,
+    )
+    for tick in range(40):
+        engine.tick(tick * 0.02, make_state(left_x=0.12))
+    measured = engine.calibration.axes["left_x"].centre
+    assert measured == pytest.approx(0.12, abs=0.01)
+
+    engine.tick(5.0, make_state(left_x=0.12))
+    assert engine.profile.name == "Second"
+    assert engine.calibration.axes["left_x"].centre == pytest.approx(measured)
