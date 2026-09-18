@@ -1,10 +1,11 @@
 {
   "name": "My profile",
-  "description": "Starting point written by `padmap init`. Edit freely, then run: padmap run -p <this file>",
+  "description": "Starting point written by `padmap init`. Every option is spelled out — delete what you don't want. Run: padmap run -w -p <this file>",
   "poll_hz": 120,
   "device": {
     "match": "xbox",
     "trigger_mode": "auto",
+    "auto_centre": true,
     "layout": {}
   },
   "buttons": {
@@ -12,11 +13,11 @@
     "b": "mouse:right",
     "x": "key:enter",
     "y": "key:esc",
-    "lb": "scroll:up",
-    "rb": "scroll:down",
+    "lb": "special:precision",
+    "rb": "special:layer:shift",
     "back": "special:toggle_pause",
     "start": "text:hello from padmap",
-    "ls": "noop",
+    "ls": "mouse:middle",
     "rs": "noop"
   },
   "dpad": {
@@ -32,16 +33,39 @@
   "sticks": {
     "left": {
       "mode": "mouse",
-      "speed": 900,
-      "deadzone": 0.15,
+      "speed": 1000,
+      "deadzone": 0.1,
+      "outer_deadzone": 1.0,
       "curve": 2.0,
+      "smoothing": 0.35,
+      "accel": 2.5,
+      "accel_time": 0.5,
+      "precision": 0.22,
       "invert_x": false,
       "invert_y": false
     },
     "right": {
       "mode": "scroll",
-      "speed": 12,
-      "deadzone": 0.25
+      "speed": 14,
+      "deadzone": 0.2,
+      "smoothing": 0.4
+    }
+  },
+  "layers": {
+    "shift": {
+      "description": "hold RB for a second set of bindings",
+      "buttons": {
+        "a": "key:media_play_pause",
+        "b": "key:media_volume_mute",
+        "x": "key:ctrl+c",
+        "y": "key:ctrl+v"
+      },
+      "dpad": {
+        "up": { "action": "key:media_volume_up", "turbo": 8 },
+        "down": { "action": "key:media_volume_down", "turbo": 8 },
+        "left": "key:alt+left",
+        "right": "key:alt+right"
+      }
     }
   }
 }

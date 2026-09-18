@@ -3,7 +3,8 @@
   "description": "Keyboard-and-mouse shooter layout: left stick is WASD, right stick aims, triggers shoot.",
   "poll_hz": 200,
   "device": {
-    "match": "xbox"
+    "match": "xbox",
+    "auto_centre": true
   },
   "buttons": {
     "a": "key:space",
@@ -31,7 +32,7 @@
     "left": {
       "mode": "keys",
       "threshold": 0.5,
-      "deadzone": 0.2,
+      "deadzone": 0.15,
       "up": "key:w",
       "down": "key:s",
       "left": "key:a",
@@ -40,8 +41,11 @@
     "right": {
       "mode": "mouse",
       "speed": 1400,
-      "deadzone": 0.12,
-      "curve": 2.2
+      "deadzone": 0.08,
+      "curve": 2.2,
+      "smoothing": 0.12,
+      "accel": 1.0,
+      "precision": 0.35
     }
   }
 }

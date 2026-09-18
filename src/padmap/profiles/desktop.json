@@ -1,21 +1,22 @@
 {
   "name": "Desktop",
-  "description": "Drive the whole desktop from the couch: left stick moves the pointer, right stick scrolls.",
+  "description": "Drive the whole desktop from the couch: left stick points, right stick scrolls, RB opens media and browser keys.",
   "poll_hz": 120,
   "device": {
-    "match": "xbox"
+    "match": "xbox",
+    "auto_centre": true
   },
   "buttons": {
     "a": "mouse:left",
     "b": "mouse:right",
     "x": "key:enter",
     "y": "key:esc",
-    "lb": "key:alt+left",
-    "rb": "key:alt+right",
+    "lb": "special:precision",
+    "rb": "special:layer:nav",
     "back": "special:toggle_pause",
     "start": "key:cmd",
-    "ls": "key:space",
-    "rs": "mouse:middle"
+    "ls": "mouse:middle",
+    "rs": "key:space"
   },
   "dpad": {
     "up": { "action": "key:up", "turbo": 12 },
@@ -24,21 +25,44 @@
     "right": { "action": "key:right", "turbo": 12 }
   },
   "triggers": {
-    "lt": { "action": "key:media_volume_down", "threshold": 0.4, "turbo": 8 },
-    "rt": { "action": "key:media_volume_up", "threshold": 0.4, "turbo": 8 }
+    "lt": { "action": "key:page_up", "threshold": 0.4, "turbo": 6 },
+    "rt": { "action": "key:page_down", "threshold": 0.4, "turbo": 6 }
   },
   "sticks": {
     "left": {
       "mode": "mouse",
-      "speed": 900,
-      "deadzone": 0.15,
-      "curve": 2.0
+      "speed": 1000,
+      "deadzone": 0.1,
+      "curve": 2.0,
+      "smoothing": 0.35,
+      "accel": 2.5,
+      "accel_time": 0.5,
+      "precision": 0.22
     },
     "right": {
       "mode": "scroll",
-      "speed": 12,
-      "deadzone": 0.25,
-      "curve": 1.5
+      "speed": 14,
+      "deadzone": 0.2,
+      "curve": 1.5,
+      "smoothing": 0.4,
+      "precision": 0.35
+    }
+  },
+  "layers": {
+    "nav": {
+      "description": "media and browser navigation",
+      "buttons": {
+        "a": "key:media_play_pause",
+        "b": "key:media_volume_mute",
+        "x": "key:media_next",
+        "y": "key:media_previous"
+      },
+      "dpad": {
+        "up": { "action": "key:media_volume_up", "turbo": 8 },
+        "down": { "action": "key:media_volume_down", "turbo": 8 },
+        "left": "key:alt+left",
+        "right": "key:alt+right"
+      }
     }
   }
 }
