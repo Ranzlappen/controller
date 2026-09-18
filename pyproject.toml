@@ -11,7 +11,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "padmap"
-version = "0.2.0"
+version = "0.3.0"
 description = "Map an Xbox controller to keyboard keys and mouse movement."
 readme = "README.md"
 license = { text = "MIT" }
@@ -43,6 +43,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# System-tray control surface. Kept optional so the core install stays at two
+# dependencies for people who are happy with `padmap run --detach`.
+tray = [
+    "pystray>=0.19,<1.0",
+    "Pillow>=10.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
