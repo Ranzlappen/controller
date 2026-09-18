@@ -17,7 +17,7 @@ padmap reads an Xbox One (or Xbox Series / Xbox 360) controller and turns it int
 
 Mappings live in small JSON **profiles** you can read and edit by hand. Three are bundled — `desktop`, `fps` and a `starter` you copy and change.
 
-It is deliberately small: two runtime dependencies, one command, no daemon, no tray icon, no GUI editor. `padmap monitor` tells you what your pad reports, `padmap calibrate` measures what your pad's sticks actually do, and the JSON tells padmap what to do about it.
+It is deliberately small: **two runtime dependencies** and one command. It can run in the background with a tray icon, but nothing is a daemon you have to install and there is no GUI editor — `padmap monitor` tells you what your pad reports, `padmap calibrate` measures what its sticks actually do, and the JSON tells padmap what to do about it.
 
 ---
 
@@ -25,6 +25,9 @@ It is deliberately small: two runtime dependencies, one command, no daemon, no t
 
 | I want to... | Do this |
 | --- | --- |
+| **Run it in the background** | `padmap run --detach`, then `padmap status` / `padmap stop` |
+| **Stop it typing into my own terminal** | `padmap run --delay 3` — focus another window while it counts down |
+| **Control it from the system tray** | `pip install 'padmap[tray]'`, then `padmap tray` |
 | **Stop the pointer drifting on its own** | `padmap calibrate --write mine.json` |
 | **Tune the feel without restarting** | `padmap run -w -p mine.json` — edits apply live |
 | See what my controller reports | `padmap devices`, then `padmap monitor` |
@@ -63,7 +66,15 @@ pip install .
 ```
 padmap devices          # is the pad seen at all?
 padmap run --dry-run    # watch what would be sent — nothing reaches the desktop
-padmap run              # for real; Back pauses, Ctrl-C stops
+padmap run --delay 3    # for real, after a countdown so you can focus another window
+```
+
+The countdown matters the first time: without it the window with focus when padmap starts is **the terminal you started it from**, so a mouse-mode profile immediately flings the pointer around your own shell. Once you trust it, run it in the background instead and forget the terminal exists:
+
+```
+padmap run --detach     # hands the session off, frees the terminal
+padmap status           # is it running? which profile? how long?
+padmap stop             # shut it down cleanly
 ```
 
 **If the pointer drifts, or the sticks feel vague, calibrate before anything else:**
@@ -177,6 +188,50 @@ Every dial, and what it is actually for:
 | `invert_x` / `invert_y` | false | Flip an axis. |
 
 **Speed, accel and precision are meant to be used together.** One flat speed forces a bad choice: slow enough to hit a checkbox means crawling across the screen, fast enough to cross the screen means overshooting everything. Holding the stick out is an unambiguous "I am travelling" so `accel` builds; holding the precision button is an unambiguous "I am aiming" so everything slows. The bundled `desktop` profile ships `speed: 1000`, `accel: 2.5` and `precision: 0.22`, which spans roughly 220 to 2500 px/s on one stick.
+
+### Running it in the background
+
+padmap synthesises input at the OS level — `SendInput` on Windows, `CGEventPost` on macOS, XTEST on X11 — so **whatever is sent goes to whichever window has focus**, exactly like a real keyboard. There is no window to target and nothing to configure for that.
+
+Which is precisely why the terminal is a problem: the terminal you launch from *is* the focused window, so the first thing a mouse-mode profile does is fling the pointer around your own shell. Two ways out, and you want the second one:
+
+```
+padmap run --delay 3     # counts down, so you can click into another window first
+padmap run --detach      # hands the session off and frees the terminal entirely
+```
+
+A detached session outlives the terminal that started it, so you can close the window:
+
+| Command | Does |
+| --- | --- |
+| `padmap run --detach` | Start in the background, print the pid and the log path |
+| `padmap status` | Running or not, which profile, how long, where the log is |
+| `padmap stop` | Ask it to exit; it releases every held key on the way out |
+
+Stopping goes through a **file**, not a signal — Windows has no usable cross-process `SIGTERM`, and the engine is already polling, so noticing a file costs nothing and behaves identically on every platform. `padmap stop` waits for the process to actually go before reporting success.
+
+### The tray icon
+
+```
+pip install 'padmap[tray]'
+padmap tray
+```
+
+Hover for state, click for control: pause/resume, reload the profile, switch between bundled profiles, quit. The icon turns amber while paused.
+
+It is an **optional extra** — it pulls in pystray and Pillow, and the core install stays at two dependencies for anyone happy with `--detach`. Tray clicks arrive on a different thread from the mapping loop, so they are queued and applied by the loop itself rather than mutating engine state mid-tick.
+
+### Knowing what it is doing
+
+`padmap run` prints a live status line, rewritten in place:
+
+```
+● Desktop │ layer nav │ precision │ drift 0.18 corrected │ 9,133 events
+```
+
+It tells you the profile, which layer is held, whether the precision modifier is down, how much stick drift is being corrected for, and how many events have actually been sent — so "is this thing even working?" is answerable at a glance. While padmap is measuring your sticks at startup it says `◌ centring sticks…`, and pausing turns the line into `⏸ PAUSED`.
+
+When output is piped or detached, the line is suppressed rather than scrolled — otherwise a detached session's log would fill with thousands of near-identical rows and bury the messages worth reading.
 
 ### Drift, and why a deadzone isn't enough
 
@@ -295,6 +350,9 @@ controller/
 │   ├── config.py             ← profile schema, loading, validation
 │   ├── curves.py             ← deadzones, curves, smoothing, acceleration
 │   ├── calibration.py        ← measuring stick drift and travel
+│   ├── display.py            ← the live status line and dry-run trace
+│   ├── runtime.py            ← background sessions: state file, stop protocol
+│   ├── tray.py               ← optional system-tray control surface
 │   ├── devices.py            ← controller discovery and polling (pygame)
 │   ├── backends.py           ← keyboard/mouse output (pynput) + a recording fake
 │   ├── engine.py             ← the mapping loop: state in, events out

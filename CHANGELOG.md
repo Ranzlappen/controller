@@ -6,6 +6,54 @@ All notable changes to **padmap** are recorded here. Format follows
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-09-18
+
+Usability pass. v0.2.0 fixed how the sticks *feel*; this fixes how you actually
+live with the thing. padmap already sent input to whichever window had focus —
+it injects at the OS level, like a real keyboard — but it held a terminal
+hostage to do it, and the terminal was the focused window, so the first thing a
+mouse profile did was fling the pointer around your own shell.
+
+### Added
+
+- **Background sessions.** `padmap run --detach` starts padmap in its own
+  session and frees the terminal; it survives the terminal closing.
+  `padmap status` reports the pid, profile, uptime and log path;
+  `padmap stop` shuts it down and waits for it to actually go.
+- **A startup countdown** (`padmap run --delay 3`), so you can focus the window
+  you meant to control before anything is sent.
+- **A live status line.** `● Desktop │ layer nav │ precision │ drift 0.18
+  corrected │ 9,133 events`, rewritten in place — profile, held layer,
+  precision modifier, drift being corrected, and how many events have actually
+  been sent, so "is this working?" is answerable at a glance. Suppressed when
+  output is piped or detached, so a detached log stays readable.
+- **An optional system-tray icon** (`pip install 'padmap[tray]'`, then
+  `padmap tray`). Hover for state; click to pause, reload, switch bundled
+  profile, or quit. The icon turns amber while paused. Optional on purpose —
+  the core install stays at two dependencies.
+- **`Engine.request_pause` / `request_profile` / `request_reload`** — a queued
+  request API for callers on another thread. Tray clicks leave a pending value
+  that the mapping loop applies at the top of its next tick.
+- **`Engine.status()`** returns an `EngineStatus` snapshot by value, so a
+  display can render without reaching into engine internals.
+- **`Engine.adopt_profile`**, extracted from the reload path so a profile swap
+  from the tray and a swap from a file edit take exactly the same code path.
+
+### Changed
+
+- The reload check became a general control poll, which now also notices a stop
+  request. Both are the things that reach in from outside the process, and
+  neither is worth a filesystem call on every one of 120 ticks a second.
+- `padmap run` records a session state file whether or not it is detached, so
+  `status` and `stop` work against a foreground session too.
+- Argument validation moved ahead of opening the controller and the input
+  backend, so a bad `--watch` fails instantly instead of after grabbing the pad.
+
+### Fixed
+
+- A leftover stop file from a previous session would have killed the next one
+  on its first control poll. Every session clears it on startup.
+
 ## [0.2.0] — 2026-09-18
 
 Controllability pass. v0.1.0 had one dial for stick drift — a deadzone — and a
@@ -99,6 +147,7 @@ Sections to use (omit any that don't apply for a given release):
   Added | Changed | Deprecated | Removed | Fixed | Security
 -->
 
-[Unreleased]: https://github.com/Ranzlappen/controller/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Ranzlappen/controller/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Ranzlappen/controller/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Ranzlappen/controller/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Ranzlappen/controller/releases/tag/v0.1.0

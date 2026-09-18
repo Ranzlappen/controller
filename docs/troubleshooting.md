@@ -31,6 +31,35 @@ padmap run --dry-run
 
 If the dry run prints events as you press buttons, padmap's mapping is working and the problem is entirely on the delivery side — go back to the table above.
 
+## It types into my own terminal
+
+Because your terminal is the focused window. padmap injects at the OS level, so everything it sends goes wherever focus is — exactly like a real keyboard would.
+
+```
+padmap run --delay 3     # counts down; click into another window first
+padmap run --detach      # better: hands the session off and frees the terminal
+```
+
+With `--detach` the terminal is free immediately and you can close it. Check on it with `padmap status`, shut it down with `padmap stop`.
+
+## I closed the terminal and it stopped
+
+Only a foreground session dies with its terminal. `padmap run --detach` starts it in its own session so it survives. If you want it back under your eye, `padmap stop` then `padmap run` again.
+
+## Is it even running?
+
+```
+padmap status
+```
+
+Tells you the pid, the profile, how long it has been up, and where its log is. If it says a previous session "exited", read that log — it stopped on its own and the reason will be in there.
+
+A foreground `padmap run` also prints a live status line showing the profile, the held layer, the precision modifier, the drift being corrected, and the number of events actually sent. If the event count is not climbing while you press buttons, padmap is not seeing the pad — go back to `padmap devices`.
+
+## `padmap stop` says it did not exit
+
+padmap releases every held key before exiting, so give it a second. If it is genuinely wedged, kill it by the pid `padmap status` reports. The stop request stays pending, so the session will still notice it if it comes back to life.
+
 ## The wrong button does the wrong thing
 
 Drivers disagree about which raw index is which physical button. Find out what yours actually reports:
