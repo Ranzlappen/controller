@@ -11,15 +11,17 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import os
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
-from padmap import __version__
+from padmap import __version__, runtime
 from padmap.actions import ActionError
-from padmap.backends import BackendError, Event, RecordingBackend
+from padmap.backends import BackendError, RecordingBackend
 from padmap.calibration import (
     STICK_AXES,
     Calibration,
@@ -36,6 +38,12 @@ from padmap.config import (
     starter_profile_json,
 )
 from padmap.devices import DeviceError
+from padmap.display import (
+    RUNNING,
+    DryRunPrinter,
+    StatusLine,
+    format_duration,
+)
 from padmap.engine import Engine
 
 __all__ = ["build_parser", "main"]
@@ -43,6 +51,47 @@ __all__ = ["build_parser", "main"]
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_INTERRUPTED = 130
+
+
+def detached_argv(args: argparse.Namespace, executable: str = "") -> list[str]:
+    """The command line that re-runs this `run` without `--detach`.
+
+    Rebuilt explicitly from the parsed arguments rather than filtered out of
+    sys.argv, so it stays correct whichever spelling of a flag was typed.
+    """
+    argv = [executable or sys.executable, "-m", "padmap", "run", "-p", args.profile]
+    if args.device is not None:
+        argv += ["--device", str(args.device)]
+    if args.match:
+        argv += ["--match", args.match]
+    if args.poll_hz:
+        argv += ["--poll-hz", str(args.poll_hz)]
+    if args.dry_run:
+        argv.append("--dry-run")
+    if args.watch:
+        argv.append("--watch")
+    return argv
+
+
+def spawn_detached(argv: list[str], log: Path) -> int:  # pragma: no cover - spawns a process
+    """Start padmap in its own session, with its output going to a log file."""
+    log.parent.mkdir(parents=True, exist_ok=True)
+    handle = log.open("ab", buffering=0)
+    kwargs: dict[str, Any] = {
+        "stdout": handle,
+        "stderr": subprocess.STDOUT,
+        "stdin": subprocess.DEVNULL,
+        "close_fds": True,
+    }
+    if sys.platform == "win32":
+        # DETACHED_PROCESS drops the console; a new process group keeps the
+        # parent terminal's Ctrl-C from reaching it.
+        kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+    # argv is built by detached_argv() from already-parsed arguments and runs
+    # without a shell, so there is no injection surface here.
+    return subprocess.Popen(argv, **kwargs).pid  # noqa: S603
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -78,6 +127,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="reload the profile whenever the file changes — tune it while it runs",
     )
+    run.add_argument(
+        "-d",
+        "--detach",
+        action="store_true",
+        help="run in the background, freeing this terminal (stop it with `padmap stop`)",
+    )
+    run.add_argument(
+        "--delay",
+        type=float,
+        default=0.0,
+        help="wait this many seconds before sending anything, so you can focus another window",
+    )
     run.add_argument("-q", "--quiet", action="store_true", help="suppress the startup summary")
     run.set_defaults(handler=_cmd_run)
 
@@ -97,6 +158,26 @@ def build_parser() -> argparse.ArgumentParser:
     validate = subcommands.add_parser("validate", help="check a profile and describe its mapping")
     validate.add_argument("profile", help="bundled profile name or path to a .json profile")
     validate.set_defaults(handler=_cmd_validate)
+
+    tray = subcommands.add_parser(
+        "tray", help="run with a system-tray icon (needs: pip install 'padmap[tray]')"
+    )
+    tray.add_argument("-p", "--profile", default="desktop", help="profile name or .json path")
+    tray.add_argument("--device", type=int, default=None, help="controller index")
+    tray.add_argument("--match", default=None, help="substring of the controller name")
+    tray.add_argument("--poll-hz", type=float, default=None, help="override the poll rate")
+    tray.add_argument("--dry-run", action="store_true", help="print instead of sending")
+    tray.add_argument("-w", "--watch", action="store_true", help="reload the profile on change")
+    tray.set_defaults(handler=_cmd_tray)
+
+    status = subcommands.add_parser("status", help="is a padmap session running?")
+    status.set_defaults(handler=_cmd_status)
+
+    stop = subcommands.add_parser("stop", help="stop the running session")
+    stop.add_argument(
+        "--timeout", type=float, default=5.0, help="seconds to wait for it to exit (default: 5)"
+    )
+    stop.set_defaults(handler=_cmd_stop)
 
     calibrate = subcommands.add_parser(
         "calibrate", help="measure stick drift and travel, and write it into a profile"
@@ -219,6 +300,114 @@ def merge_calibration_into_file(path: Path, calibration: Calibration) -> None:
 
     Profile.from_dict(data, source=str(path))
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def _cmd_tray(args: argparse.Namespace) -> int:  # pragma: no cover - needs a desktop session
+    """Run the engine with a tray icon as its control surface."""
+    from padmap.tray import TrayApp, TrayUnavailableError
+
+    profile = load_profile(args.profile)
+    if args.poll_hz:
+        profile = _with_poll_hz(profile, args.poll_hz)
+
+    report = lambda message: print(f"padmap: {message}")  # noqa: E731
+    watcher = None
+    if args.watch and profile.source and not profile.source.startswith("bundled:"):
+        watcher = ProfileWatcher(Path(profile.source), on_error=report)
+
+    backend, _ = _make_backend(dry_run=args.dry_run)
+    controller = _open_controller(profile, args)
+    runtime.clear_stop()
+
+    engine = Engine(
+        profile,
+        controller,
+        backend,
+        on_status=report,
+        reload_source=watcher,
+        stop_check=runtime.stop_requested,
+    )
+
+    def switch(name: str) -> None:
+        """Load a profile by name from the tray menu, reporting failures."""
+        try:
+            engine.request_profile(load_profile(name))
+        except ProfileError as exc:
+            report(f"could not switch to {name}: {exc}")
+
+    app = TrayApp(engine, profiles=bundled_profile_names(), switch_profile=switch)
+    engine.on_frame = app.on_frame
+
+    runtime.write_state(
+        runtime.SessionState(
+            pid=os.getpid(), profile=profile.name, started_at=time.time(), detached=False
+        )
+    )
+    try:
+        app.run()
+    except TrayUnavailableError as exc:
+        print(f"padmap: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    finally:
+        engine.release_all()
+        controller.close()
+        backend.close()
+        runtime.clear_state()
+        runtime.clear_stop()
+    return EXIT_OK
+
+
+def _cmd_status(_args: argparse.Namespace) -> int:
+    """Report on the running session, if there is one."""
+    state = runtime.read_state()
+    if state is None:
+        print("padmap is not running.")
+        return EXIT_OK
+    if not state.alive:
+        print(f"padmap is not running (last session, pid {state.pid}, exited).")
+        if state.log:
+            print(f"  log: {state.log}")
+        runtime.clear_state()
+        return EXIT_OK
+
+    print(f"{RUNNING} padmap is running")
+    print(f"  pid:      {state.pid}")
+    print(f"  profile:  {state.profile}")
+    print(f"  uptime:   {format_duration(state.uptime)}")
+    print(f"  detached: {'yes' if state.detached else 'no'}")
+    if state.log:
+        print(f"  log:      {state.log}")
+    print("\nStop it with:  padmap stop")
+    return EXIT_OK
+
+
+def _cmd_stop(args: argparse.Namespace) -> int:
+    """Ask the running session to shut down, and wait for it to."""
+    state = runtime.read_state()
+    if state is None or not state.alive:
+        print("padmap is not running.")
+        runtime.clear_state()
+        runtime.clear_stop()
+        return EXIT_OK
+
+    runtime.request_stop()
+    print(f"Asked pid {state.pid} to stop...", end="", flush=True)
+    deadline = time.monotonic() + args.timeout
+    while time.monotonic() < deadline:
+        if not state.alive:
+            print(" stopped.")
+            runtime.clear_state()
+            runtime.clear_stop()
+            return EXIT_OK
+        time.sleep(0.1)
+
+    print(" still running.")
+    print(
+        f"padmap: pid {state.pid} did not exit within {args.timeout:g}s. It releases every held "
+        "key before exiting, so give it a moment; if it is wedged, kill it by pid.",
+        file=sys.stderr,
+    )
+    return EXIT_ERROR
 
 
 def _cmd_calibrate(args: argparse.Namespace) -> int:  # pragma: no cover - needs hardware
@@ -346,21 +535,53 @@ def _cmd_run(args: argparse.Namespace) -> int:
             )
         watcher = ProfileWatcher(Path(profile.source), on_error=report)
 
+    if args.detach:
+        log = runtime.log_path()
+        pid = spawn_detached(detached_argv(args), log)
+        runtime.clear_stop()
+        runtime.write_state(
+            runtime.SessionState(
+                pid=pid,
+                profile=profile.name,
+                started_at=time.time(),
+                detached=True,
+                log=str(log),
+            )
+        )
+        print(f"padmap running in the background (pid {pid}).")
+        print(f"  log:   {log}")
+        print("  stop:  padmap stop")
+        return EXIT_OK
+
     backend, describe_backend = _make_backend(dry_run=args.dry_run)
     controller = _open_controller(profile, args)
+
+    # A stop file left behind by a previous session would kill this one on its
+    # first control poll.
+    runtime.clear_stop()
+    status_line = StatusLine(enabled=False if args.quiet else None)
 
     engine = Engine(
         profile,
         controller,
         backend,
-        on_status=report,
+        on_status=lambda message: (status_line.clear(), report(message)),
         reload_source=watcher,
+        stop_check=runtime.stop_requested,
+        on_frame=status_line,
     )
     _install_signal_handlers(engine)
 
     if not args.quiet:
         _print_banner(profile, controller.name, describe_backend, watching=bool(watcher))
+    if args.delay > 0:
+        _countdown(args.delay, quiet=args.quiet)
 
+    runtime.write_state(
+        runtime.SessionState(
+            pid=os.getpid(), profile=profile.name, started_at=time.time(), detached=False
+        )
+    )
     try:
         engine.run()
     except KeyboardInterrupt:  # pragma: no cover - depends on a real signal
@@ -369,9 +590,35 @@ def _cmd_run(args: argparse.Namespace) -> int:
         engine.release_all()
         controller.close()
         backend.close()
+        status_line.clear()
+        runtime.clear_state()
+        runtime.clear_stop()
     if not args.quiet:
         print("padmap: stopped, all keys released")
     return EXIT_OK
+
+
+def _countdown(seconds: float, quiet: bool = False, sleep: Any = time.sleep) -> None:
+    """Pause before the first synthetic event, so you can focus another window.
+
+    Without this, the window with focus when padmap starts is the terminal you
+    started it from — so the first thing a mouse-mode profile does is fling the
+    pointer around your own shell.
+    """
+    remaining = int(seconds)
+    while remaining > 0 and not quiet:
+        print(
+            f"\rpadmap: starting in {remaining}... (focus the window you want to control)  ",
+            end="",
+            flush=True,
+        )
+        sleep(1.0)
+        remaining -= 1
+    if not quiet:
+        print("\r" + " " * 70 + "\r", end="", flush=True)
+    leftover = seconds - int(seconds)
+    if leftover > 0:
+        sleep(leftover)
 
 
 def _with_poll_hz(profile: Profile, poll_hz: float) -> Profile:
@@ -386,7 +633,7 @@ def _with_poll_hz(profile: Profile, poll_hz: float) -> Profile:
 def _make_backend(dry_run: bool) -> tuple[Any, str]:
     """Pick the real backend or the recording one used by ``--dry-run``."""
     if dry_run:
-        return RecordingBackend(on_event=_DryRunPrinter()), "dry run (nothing is sent)"
+        return RecordingBackend(on_event=DryRunPrinter()), "dry run (nothing is sent)"
     from padmap.backends import PynputBackend
 
     return PynputBackend(), "live (keys and mouse are really sent)"
@@ -400,29 +647,6 @@ def _open_controller(profile: Profile, args: argparse.Namespace) -> Any:  # prag
         index=args.device if args.device is not None else profile.device.index,
         layout=profile.device.layout,
     )
-
-
-class _DryRunPrinter:
-    """Prints dry-run events, collapsing pointer motion so it stays readable."""
-
-    def __init__(self, motion_interval: float = 0.25, clock: Any = time.monotonic) -> None:
-        self._motion_interval = motion_interval
-        self._clock = clock
-        self._motion = [0, 0]
-        self._next_motion_print = 0.0
-
-    def __call__(self, event: Event) -> None:
-        if event.kind != "mouse_move":
-            print(f"  {event}")
-            return
-        dx, dy = (int(part) for part in event.detail.split(","))
-        self._motion[0] += dx
-        self._motion[1] += dy
-        now = self._clock()
-        if now >= self._next_motion_print:
-            print(f"  mouse_move {self._motion[0]:+d},{self._motion[1]:+d} (since last line)")
-            self._motion = [0, 0]
-            self._next_motion_print = now + self._motion_interval
 
 
 def _print_banner(
@@ -483,6 +707,14 @@ class ProfileWatcher:
         except OSError:
             return None
         return (info.st_mtime_ns, info.st_size)
+
+    def force(self) -> None:
+        """Make the next poll reload even if the file has not changed.
+
+        Forgetting the stamp is enough: the next read sees a stamp that differs
+        from "no stamp at all" and reloads.
+        """
+        self._stamp = None
 
     def __call__(self) -> Profile | None:
         """Return a reloaded profile, or None if nothing usable changed."""

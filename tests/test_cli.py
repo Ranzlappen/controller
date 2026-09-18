@@ -6,27 +6,33 @@ Only the commands that need no hardware are exercised here — `devices`,
 
 from __future__ import annotations
 
+import io
 import json
+import os
+import time
 from pathlib import Path
 
 import pytest
 
+from padmap import runtime
 from padmap.backends import Event
 from padmap.calibration import AxisCalibration, Calibration
 from padmap.cli import (
     EXIT_ERROR,
     EXIT_OK,
     ProfileWatcher,
-    _DryRunPrinter,
     _find_layer_buttons,
     _find_special_button,
     _with_poll_hz,
     build_parser,
+    detached_argv,
     main,
     merge_calibration_into_file,
     sample_axes,
 )
 from padmap.config import Profile, ProfileError, load_profile
+from padmap.display import DryRunPrinter, StatusLine, format_duration, render_status
+from padmap.engine import EngineStatus
 
 
 def test_no_command_prints_help(capsys) -> None:
@@ -148,7 +154,7 @@ def test_find_layer_buttons() -> None:
 
 
 def test_dry_run_printer_prints_discrete_events(capsys) -> None:
-    printer = _DryRunPrinter(clock=lambda: 0.0)
+    printer = DryRunPrinter(clock=lambda: 0.0)
     printer(Event("key_down", "w"))
     assert capsys.readouterr().out.strip() == "key_down w"
 
@@ -156,7 +162,7 @@ def test_dry_run_printer_prints_discrete_events(capsys) -> None:
 def test_dry_run_printer_collapses_pointer_motion(capsys) -> None:
     """Per-tick motion would flood the terminal, so it is summarised on an interval."""
     now = [0.0]
-    printer = _DryRunPrinter(motion_interval=1.0, clock=lambda: now[0])
+    printer = DryRunPrinter(motion_interval=1.0, clock=lambda: now[0])
     printer(Event("mouse_move", "5,0"))  # prints immediately
     printer(Event("mouse_move", "5,0"))  # inside the interval — accumulates
     printer(Event("mouse_move", "5,0"))
@@ -266,3 +272,171 @@ def test_merge_calibration_rejects_a_file_that_is_not_a_profile(tmp_path: Path) 
 def test_merge_calibration_reports_a_missing_file(tmp_path: Path) -> None:
     with pytest.raises(ProfileError, match="cannot read"):
         merge_calibration_into_file(tmp_path / "absent.json", Calibration())
+
+
+# --- Status line -------------------------------------------------------------
+
+
+def a_status(**overrides) -> EngineStatus:
+    defaults = {
+        "profile": "Desktop",
+        "paused": False,
+        "layers": (),
+        "precision": False,
+        "events": 0,
+        "drift": {},
+        "settling": False,
+    }
+    return EngineStatus(**{**defaults, **overrides})
+
+
+def test_status_line_reports_the_running_profile() -> None:
+    assert "Desktop" in render_status(a_status())
+
+
+def test_status_line_calls_out_pause_loudly() -> None:
+    assert "PAUSED" in render_status(a_status(paused=True))
+
+
+def test_status_line_shows_centring_and_nothing_else() -> None:
+    """During the startup measurement nothing is being sent, so say only that."""
+    line = render_status(a_status(settling=True, events=5))
+    assert "centring" in line
+    assert "events" not in line
+
+
+def test_status_line_surfaces_layer_precision_and_drift() -> None:
+    line = render_status(
+        a_status(layers=("nav",), precision=True, drift={"left_x": 0.18}, events=1234)
+    )
+    assert "layer nav" in line
+    assert "precision" in line
+    assert "drift 0.18 corrected" in line
+    assert "1,234 events" in line
+
+
+def test_status_line_hides_drift_too_small_to_care_about() -> None:
+    assert "drift" not in render_status(a_status(drift={"left_x": 0.001}))
+
+
+def test_status_line_truncates_to_the_terminal_width() -> None:
+    line = render_status(a_status(layers=("nav",), precision=True, events=999999), width=20)
+    assert len(line) <= 20
+    assert line.endswith("…")
+
+
+def test_status_line_writes_in_place_and_erases_leftovers() -> None:
+    stream = io.StringIO()
+    line = StatusLine(stream=stream, enabled=True)
+    line(a_status(events=1234567))
+    long = stream.getvalue()
+    line(a_status(events=0))
+    written = stream.getvalue()[len(long) :]
+    assert written.startswith("\r")
+    assert written.rstrip().endswith("events"), "shorter line must blank the old tail"
+
+
+def test_status_line_stays_silent_when_there_is_no_terminal() -> None:
+    """A detached session logs to a file; thousands of near-identical lines is noise."""
+    stream = io.StringIO()
+    StatusLine(stream=stream, enabled=False)(a_status())
+    assert stream.getvalue() == ""
+
+
+def test_status_line_clear_resets_the_row() -> None:
+    stream = io.StringIO()
+    line = StatusLine(stream=stream, enabled=True)
+    line(a_status())
+    line.clear()
+    assert stream.getvalue().endswith("\r")
+
+
+def test_status_line_autodetects_a_non_tty() -> None:
+    assert StatusLine(stream=io.StringIO()).enabled is False
+
+
+# --- Detached argv -----------------------------------------------------------
+
+
+def test_detached_argv_rebuilds_the_run_command_without_detach() -> None:
+    args = build_parser().parse_args(["run", "-p", "fps", "--detach", "--watch"])
+    argv = detached_argv(args, executable="/usr/bin/python3")
+    assert argv[:5] == ["/usr/bin/python3", "-m", "padmap", "run", "-p"]
+    assert "--watch" in argv
+    assert "--detach" not in argv and "-d" not in argv
+
+
+def test_detached_argv_carries_the_device_selection() -> None:
+    args = build_parser().parse_args(
+        ["run", "--device", "2", "--match", "xbox", "--poll-hz", "90", "--dry-run"]
+    )
+    argv = detached_argv(args, executable="py")
+    for expected in ("--device", "2", "--match", "xbox", "--poll-hz", "90.0", "--dry-run"):
+        assert expected in argv
+
+
+def test_detached_argv_omits_flags_that_were_not_given() -> None:
+    argv = detached_argv(build_parser().parse_args(["run"]), executable="py")
+    assert "--device" not in argv and "--dry-run" not in argv and "--watch" not in argv
+
+
+# --- status / stop -----------------------------------------------------------
+
+
+@pytest.fixture
+def isolated_runtime(tmp_path: Path, monkeypatch) -> Path:
+    monkeypatch.setenv(runtime.RUNTIME_DIR_ENV, str(tmp_path / "rt"))
+    return tmp_path / "rt"
+
+
+def test_status_says_nothing_is_running(isolated_runtime: Path, capsys) -> None:
+    assert main(["status"]) == EXIT_OK
+    assert "not running" in capsys.readouterr().out
+
+
+def test_status_describes_a_live_session(isolated_runtime: Path, capsys) -> None:
+    runtime.write_state(
+        runtime.SessionState(
+            pid=os.getpid(), profile="Desktop", started_at=time.time() - 75, detached=True
+        )
+    )
+    assert main(["status"]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "is running" in out
+    assert "Desktop" in out
+    assert "1m 15s" in out
+    assert "detached: yes" in out
+
+
+def test_status_clears_a_session_whose_process_died(isolated_runtime: Path, capsys) -> None:
+    runtime.write_state(runtime.SessionState(pid=2**30, profile="Desktop", started_at=time.time()))
+    assert main(["status"]) == EXIT_OK
+    assert "exited" in capsys.readouterr().out
+    assert runtime.read_state() is None, "the stale record should be tidied away"
+
+
+def test_stop_with_nothing_running_is_not_an_error(isolated_runtime: Path, capsys) -> None:
+    assert main(["stop"]) == EXIT_OK
+    assert "not running" in capsys.readouterr().out
+
+
+def test_stop_on_a_dead_session_tidies_up(isolated_runtime: Path) -> None:
+    runtime.write_state(runtime.SessionState(pid=2**30, profile="x", started_at=time.time()))
+    assert main(["stop"]) == EXIT_OK
+    assert runtime.read_state() is None
+    assert not runtime.stop_requested()
+
+
+def test_stop_reports_a_session_that_will_not_exit(isolated_runtime: Path, capsys) -> None:
+    """This process never honours the stop file, standing in for a wedged session."""
+    runtime.write_state(runtime.SessionState(pid=os.getpid(), profile="x", started_at=time.time()))
+    assert main(["stop", "--timeout", "0.2"]) == EXIT_ERROR
+    assert "did not exit" in capsys.readouterr().err
+    assert runtime.stop_requested(), "the request stands so the session can still notice it"
+
+
+@pytest.mark.parametrize(
+    ("seconds", "expected"), [(5, "5s"), (75, "1m 15s"), (3700, "1h 01m"), (0, "0s")]
+)
+def test_duration_formatting(seconds: float, expected: str) -> None:
+    assert format_duration(seconds) == expected
