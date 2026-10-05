@@ -10,10 +10,8 @@ the message points straight at the line to fix.
 
 from __future__ import annotations
 
-import json
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from importlib import resources
-from pathlib import Path
 from typing import Any
 
 from padmap.actions import Action, ActionError, parse_action
@@ -27,19 +25,26 @@ from padmap.devices import (
     DeviceError,
     Layout,
 )
+from padmap.macros import Macro, MacroError, parse_macros
+from padmap.validate import (
+    ProfileError,
+    boolean as _boolean,
+    mapping as _mapping,
+    number as _number,
+    reject_unknown as _reject_unknown,
+    text as _text,
+)
+from padmap.zones import DEFAULT_HYSTERESIS, ZoneError, ZoneSet, build_zones
 
 __all__ = [
     "Binding",
+    "ZonedInput",
     "DeviceConfig",
     "Layer",
     "Profile",
     "ProfileError",
     "StickConfig",
     "TriggerConfig",
-    "bundled_profile_names",
-    "load_profile",
-    "load_profile_file",
-    "starter_profile_json",
 ]
 
 STICK_MODES: frozenset[str] = frozenset({"mouse", "scroll", "keys", "off"})
@@ -66,53 +71,7 @@ DEFAULT_OUTER_DEADZONE = 1.0
 DEFAULT_PRECISION = 0.25
 
 
-class ProfileError(ValueError):
-    """Raised when a profile is malformed, or names something that doesn't exist."""
-
-
 # --- Validation helpers ------------------------------------------------------
-
-
-def _mapping(value: Any, path: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise ProfileError(f"{path}: expected an object, got {type(value).__name__}")
-    return value
-
-
-def _reject_unknown(data: dict[str, Any], allowed: set[str], path: str, hint: str) -> None:
-    unknown = sorted(set(data) - allowed)
-    if unknown:
-        raise ProfileError(
-            f"{path}: unknown {hint} {', '.join(repr(k) for k in unknown)}. "
-            f"Valid: {', '.join(sorted(allowed))}"
-        )
-
-
-def _number(value: Any, path: str, low: float, high: float, default: float) -> float:
-    if value is None:
-        return default
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ProfileError(f"{path}: expected a number, got {type(value).__name__}")
-    number = float(value)
-    if not low <= number <= high:
-        raise ProfileError(f"{path}: {number} is out of range [{low}, {high}]")
-    return number
-
-
-def _boolean(value: Any, path: str, default: bool = False) -> bool:
-    if value is None:
-        return default
-    if not isinstance(value, bool):
-        raise ProfileError(f"{path}: expected true or false, got {type(value).__name__}")
-    return value
-
-
-def _text(value: Any, path: str, default: str = "") -> str:
-    if value is None:
-        return default
-    if not isinstance(value, str):
-        raise ProfileError(f"{path}: expected a string, got {type(value).__name__}")
-    return value
 
 
 # --- Schema ------------------------------------------------------------------
@@ -164,23 +123,116 @@ def _parse_action(raw: Any, path: str) -> Action:
 
 
 @dataclass(frozen=True)
-class TriggerConfig:
-    """An analogue trigger treated as a button past a pull threshold."""
+class ZonedInput:
+    """An analogue input — a trigger, or one direction of a stick — as ranges.
 
-    binding: Binding
-    threshold: float = DEFAULT_TRIGGER_THRESHOLD
+    The simple forms stay simple: a bare action string, or an action plus a
+    ``threshold``, both become a single zone running from that threshold to
+    fully pressed. ``zones`` is the general case.
+    """
+
+    zone_set: ZoneSet
+
+    @property
+    def threshold(self) -> float:
+        """Where this input becomes live."""
+        return self.zone_set.threshold
+
+    @property
+    def binding(self) -> Binding:
+        """The first zone's binding — the whole story for a single-zone input."""
+        return self.bindings[0]
+
+    @property
+    def bindings(self) -> tuple[Binding, ...]:
+        """Every binding across every zone, in order."""
+        return tuple(zone.payload for zone in self.zone_set)  # type: ignore[misc]
+
+    @property
+    def is_noop(self) -> bool:
+        """True when no zone does anything."""
+        return all(binding.is_noop for binding in self.bindings)
+
+    @property
+    def zoned(self) -> bool:
+        """True when this input has more than one range."""
+        return len(self.zone_set) > 1
+
+    def describe(self) -> str:
+        """One-line summary for ``padmap validate``."""
+        if not self.zoned:
+            return f"{self.binding.action} (past {self.threshold:g}){_extras(self.binding)}"
+        parts = [
+            f"{zone} -> {zone.payload.action}{_extras(zone.payload)}"  # type: ignore[union-attr]
+            for zone in self.zone_set
+        ]
+        return "; ".join(parts)
 
     @classmethod
-    def parse(cls, raw: Any, path: str) -> TriggerConfig:
-        """Build from ``"mouse:left"`` or ``{"action": ..., "threshold": 0.5}``."""
+    def parse(cls, raw: Any, path: str, default_threshold: float) -> ZonedInput:
+        """Build from a string, a thresholded action, or an explicit zone list."""
         if raw is None or isinstance(raw, str):
-            return cls(binding=Binding.parse(raw, path))
+            return cls._single(
+                Binding.parse(raw, path), default_threshold, DEFAULT_HYSTERESIS, path
+            )
+
         data = _mapping(raw, path)
-        threshold = _number(
-            data.get("threshold"), f"{path}.threshold", 0.05, 1.0, DEFAULT_TRIGGER_THRESHOLD
+        hysteresis = _number(
+            data.get("hysteresis"), f"{path}.hysteresis", 0.0, 0.25, DEFAULT_HYSTERESIS
         )
-        binding_data = {k: v for k, v in data.items() if k != "threshold"}
-        return cls(binding=Binding.parse(binding_data, path), threshold=threshold)
+
+        if "zones" in data:
+            extra = sorted(set(data) - {"zones", "hysteresis"})
+            if extra:
+                raise ProfileError(
+                    f"{path}: {', '.join(repr(k) for k in extra)} cannot be combined with "
+                    "'zones' — put per-zone options inside each zone instead"
+                )
+            return cls._from_zones(data["zones"], hysteresis, f"{path}.zones")
+
+        threshold = _number(
+            data.get("threshold"), f"{path}.threshold", 0.0, 0.99, default_threshold
+        )
+        binding_data = {k: v for k, v in data.items() if k not in ("threshold", "hysteresis")}
+        return cls._single(Binding.parse(binding_data, path), threshold, hysteresis, path)
+
+    @classmethod
+    def _single(
+        cls, binding: Binding, threshold: float, hysteresis: float, path: str
+    ) -> ZonedInput:
+        return cls(zone_set=_build(((threshold, 1.0, binding),), hysteresis, path))
+
+    @classmethod
+    def _from_zones(cls, raw: Any, hysteresis: float, path: str) -> ZonedInput:
+        if not isinstance(raw, list) or not raw:
+            raise ProfileError(f"{path}: expected a non-empty list of zones")
+        spans: list[tuple[float, float, Binding]] = []
+        for index, entry in enumerate(raw):
+            where = f"{path}[{index}]"
+            data = _mapping(entry, where)
+            if "from" not in data or "to" not in data:
+                raise ProfileError(
+                    f"{where}: a zone needs 'from' and 'to', e.g. "
+                    '{"from": 0.1, "to": 0.5, "action": "key:w"}'
+                )
+            low = _number(data["from"], f"{where}.from", 0.0, 1.0, 0.0)
+            high = _number(data["to"], f"{where}.to", 0.0, 1.0, 1.0)
+            binding_data = {k: v for k, v in data.items() if k not in ("from", "to")}
+            spans.append((low, high, Binding.parse(binding_data, where)))
+        return cls(zone_set=_build(tuple(spans), hysteresis, path))
+
+
+def _build(spans: Any, hysteresis: float, path: str) -> ZoneSet:
+    """Wrap :func:`padmap.zones.build_zones`, translating its errors."""
+    try:
+        return build_zones(spans, hysteresis=hysteresis, path=path)
+    except ZoneError as exc:
+        raise ProfileError(str(exc)) from exc
+
+
+#: Kept as the old name so profiles and call sites that say "trigger" still read
+#: naturally; a trigger is just a zoned input whose value is the pull amount.
+TriggerConfig = ZonedInput
 
 
 @dataclass(frozen=True)
@@ -203,7 +255,7 @@ class StickConfig:
     invert_x: bool = False
     invert_y: bool = False
     threshold: float = DEFAULT_STICK_THRESHOLD
-    directions: dict[str, Binding] = field(default_factory=dict)
+    directions: dict[str, ZonedInput] = field(default_factory=dict)
 
     @property
     def active(self) -> bool:
@@ -237,8 +289,13 @@ class StickConfig:
             )
 
         default_speed = DEFAULT_SCROLL_SPEED if mode == "scroll" else DEFAULT_MOUSE_SPEED
+        stick_threshold = _number(
+            data.get("threshold"), f"{path}.threshold", 0.0, 0.99, DEFAULT_STICK_THRESHOLD
+        )
         directions = {
-            name: Binding.parse(data[name], f"{path}.{name}") for name in DPAD_NAMES if name in data
+            name: ZonedInput.parse(data[name], f"{path}.{name}", stick_threshold)
+            for name in DPAD_NAMES
+            if name in data
         }
         if mode == "keys" and not directions:
             raise ProfileError(
@@ -277,9 +334,7 @@ class StickConfig:
             ),
             invert_x=_boolean(data.get("invert_x"), f"{path}.invert_x"),
             invert_y=_boolean(data.get("invert_y"), f"{path}.invert_y"),
-            threshold=_number(
-                data.get("threshold"), f"{path}.threshold", 0.05, 1.0, DEFAULT_STICK_THRESHOLD
-            ),
+            threshold=stick_threshold,
             directions=directions,
         )
 
@@ -385,7 +440,10 @@ def _parse_sections(
 
     buttons = {n: Binding.parse(v, f"{prefix}buttons.{n}") for n, v in buttons_raw.items()}
     dpad = {n: Binding.parse(v, f"{prefix}dpad.{n}") for n, v in dpad_raw.items()}
-    triggers = {n: TriggerConfig.parse(v, f"{prefix}triggers.{n}") for n, v in triggers_raw.items()}
+    triggers = {
+        n: ZonedInput.parse(v, f"{prefix}triggers.{n}", DEFAULT_TRIGGER_THRESHOLD)
+        for n, v in triggers_raw.items()
+    }
     sticks = {n: StickConfig.parse(v, f"{prefix}sticks.{n}") for n, v in sticks_raw.items()}
 
     if not allow_specials:
@@ -398,11 +456,20 @@ def _parse_sections(
                         "switching never depends on the active layer."
                     )
         for name, trigger in triggers.items():
-            if trigger.binding.action.kind == "special":
-                raise ProfileError(
-                    f"{prefix}triggers.{name}: a layer cannot contain a special "
-                    f"({trigger.binding.action}). Bind specials in the base profile."
-                )
+            for binding in trigger.bindings:
+                if binding.action.kind == "special":
+                    raise ProfileError(
+                        f"{prefix}triggers.{name}: a layer cannot contain a special "
+                        f"({binding.action}). Bind specials in the base profile."
+                    )
+        for stick_name, stick in sticks.items():
+            for direction, zoned in stick.directions.items():
+                for binding in zoned.bindings:
+                    if binding.action.kind == "special":
+                        raise ProfileError(
+                            f"{prefix}sticks.{stick_name}.{direction}: a layer cannot contain "
+                            f"a special ({binding.action}). Bind specials in the base profile."
+                        )
 
     return buttons, dpad, triggers, sticks
 
@@ -451,7 +518,7 @@ class Layer:
         return (
             sum(1 for b in self.buttons.values() if not b.is_noop)
             + sum(1 for b in self.dpad.values() if not b.is_noop)
-            + sum(1 for t in self.triggers.values() if not t.binding.is_noop)
+            + sum(1 for t in self.triggers.values() if not t.is_noop)
             + sum(1 for s in self.sticks.values() if s.active)
         )
 
@@ -469,6 +536,7 @@ class Profile:
     triggers: dict[str, TriggerConfig] = field(default_factory=dict)
     sticks: dict[str, StickConfig] = field(default_factory=dict)
     layers: dict[str, Layer] = field(default_factory=dict)
+    macros: dict[str, Macro] = field(default_factory=dict)
     source: str = ""
 
     @classmethod
@@ -487,12 +555,18 @@ class Profile:
                 "triggers",
                 "sticks",
                 "layers",
+                "macros",
             },
             "profile",
             "section",
         )
 
         buttons, dpad, triggers, sticks = _parse_sections(data, "", allow_specials=True)
+
+        try:
+            macros = parse_macros(_mapping(data.get("macros") or {}, "macros"))
+        except MacroError as exc:
+            raise ProfileError(str(exc)) from exc
 
         layers_raw = _mapping(data.get("layers") or {}, "layers")
         layers = {
@@ -510,9 +584,11 @@ class Profile:
             triggers=triggers,
             sticks=sticks,
             layers=layers,
+            macros=macros,
             source=source,
         )
         _check_layer_references(profile)
+        _check_macro_references(profile)
         return profile
 
     @property
@@ -520,7 +596,7 @@ class Profile:
         """How many inputs this profile actually binds — the summary line's number."""
         total = sum(1 for b in self.buttons.values() if not b.is_noop)
         total += sum(1 for b in self.dpad.values() if not b.is_noop)
-        total += sum(1 for t in self.triggers.values() if not t.binding.is_noop)
+        total += sum(1 for t in self.triggers.values() if not t.is_noop)
         total += sum(1 for s in self.sticks.values() if s.active)
         total += sum(layer.binding_count for layer in self.layers.values())
         return total
@@ -534,11 +610,8 @@ class Profile:
                 if not binding.is_noop:
                     lines.append(f"  {label}.{input_name}: {binding.action}{_extras(binding)}")
         for name, trigger in sorted(self.triggers.items()):
-            if not trigger.binding.is_noop:
-                lines.append(
-                    f"  trigger.{name}: {trigger.binding.action} "
-                    f"(past {trigger.threshold:g}){_extras(trigger.binding)}"
-                )
+            if not trigger.is_noop:
+                lines.append(f"  trigger.{name}: {trigger.describe()}")
         for name, stick in sorted(self.sticks.items()):
             if stick.active:
                 detail = (
@@ -547,8 +620,10 @@ class Profile:
                     else f"speed {stick.speed:g}"
                 )
                 lines.append(f"  stick.{name}: {stick.mode} ({detail})")
-                for direction, binding in sorted(stick.directions.items()):
-                    lines.append(f"    {direction}: {binding.action}")
+                for direction, zoned in sorted(stick.directions.items()):
+                    lines.append(f"    {direction}: {zoned.describe()}")
+        for name, macro in sorted(self.macros.items()):
+            lines.append(f"  macro '{name}': {macro.describe()}")
         for layer_name, layer in sorted(self.layers.items()):
             suffix = f" — {layer.description}" if layer.description else ""
             lines.append(f"  layer '{layer_name}'{suffix}")
@@ -564,12 +639,62 @@ def _describe_layer(layer: Layer) -> list[str]:
             if not binding.is_noop:
                 lines.append(f"  {label}.{name}: {binding.action}{_extras(binding)}")
     for name, trigger in sorted(layer.triggers.items()):
-        if not trigger.binding.is_noop:
-            lines.append(f"  trigger.{name}: {trigger.binding.action} (past {trigger.threshold:g})")
+        if not trigger.is_noop:
+            lines.append(f"  trigger.{name}: {trigger.describe()}")
     for name, stick in sorted(layer.sticks.items()):
         if stick.active:
             lines.append(f"  stick.{name}: {stick.mode}")
     return lines
+
+
+def all_bindings(profile: Profile) -> Iterator[tuple[str, Binding]]:
+    """Every binding in a profile, base and layers, with where it came from."""
+
+    def walk(prefix: str, buttons, dpad, triggers, sticks) -> Iterator[tuple[str, Binding]]:
+        for label, group in (("buttons", buttons), ("dpad", dpad)):
+            for name, binding in group.items():
+                yield f"{prefix}{label}.{name}", binding
+        for name, trigger in triggers.items():
+            for index, binding in enumerate(trigger.bindings):
+                suffix = f"[{index}]" if trigger.zoned else ""
+                yield f"{prefix}triggers.{name}{suffix}", binding
+        for name, stick in sticks.items():
+            for direction, zoned in stick.directions.items():
+                for index, binding in enumerate(zoned.bindings):
+                    suffix = f"[{index}]" if zoned.zoned else ""
+                    yield f"{prefix}sticks.{name}.{direction}{suffix}", binding
+
+    yield from walk("", profile.buttons, profile.dpad, profile.triggers, profile.sticks)
+    for layer_name, layer in profile.layers.items():
+        yield from walk(
+            f"layers.{layer_name}.", layer.buttons, layer.dpad, layer.triggers, layer.sticks
+        )
+
+
+def _check_macro_references(profile: Profile) -> None:
+    """Fail on a macro binding that names a macro that does not exist.
+
+    Same reasoning as the layer check: at runtime a dangling reference is a
+    button that silently does nothing, which looks like broken hardware.
+    """
+    used: set[str] = set()
+    for where, binding in all_bindings(profile):
+        if binding.action.kind != "macro":
+            continue
+        name = binding.action.macro
+        used.add(name)
+        if name not in profile.macros:
+            known = ", ".join(sorted(profile.macros)) or "none defined"
+            raise ProfileError(
+                f"{where}: runs macro {name!r}, which has no entry under 'macros'. "
+                f"Defined macros: {known}"
+            )
+    for name in profile.macros:
+        if name not in used:
+            raise ProfileError(
+                f"macros.{name}: nothing runs this macro. Bind an input to "
+                f"'macro:{name}', or remove it."
+            )
 
 
 def _check_layer_references(profile: Profile) -> None:
@@ -585,8 +710,9 @@ def _check_layer_references(profile: Profile) -> None:
             if binding.action.command == "layer":
                 referenced[binding.action.argument] = f"{label}.{name}"
     for name, trigger in profile.triggers.items():
-        if trigger.binding.action.command == "layer":
-            referenced[trigger.binding.action.argument] = f"triggers.{name}"
+        for binding in trigger.bindings:
+            if binding.action.command == "layer":
+                referenced[binding.action.argument] = f"triggers.{name}"
 
     for layer_name, where in referenced.items():
         if layer_name not in profile.layers:
@@ -611,62 +737,3 @@ def _extras(binding: Binding) -> str:
     if binding.toggle:
         parts.append("toggle")
     return f" [{', '.join(parts)}]" if parts else ""
-
-
-# --- Loading -----------------------------------------------------------------
-
-
-def _profiles_dir():
-    return resources.files("padmap") / "profiles"
-
-
-def bundled_profile_names() -> list[str]:
-    """Names of the profiles shipped inside the package."""
-    return sorted(
-        entry.name.removesuffix(".json")
-        for entry in _profiles_dir().iterdir()
-        if entry.name.endswith(".json")
-    )
-
-
-def load_profile(reference: str) -> Profile:
-    """Load a profile by bundled name (``desktop``) or by file path.
-
-    A path is tried first so a local ``desktop.json`` in the working directory
-    wins over the bundled profile of the same name — the least surprising
-    behaviour when someone copies a bundled profile out to edit it.
-    """
-    path = Path(reference)
-    if path.suffix == ".json" or path.exists():
-        return load_profile_file(path)
-
-    available = bundled_profile_names()
-    if reference not in available:
-        raise ProfileError(
-            f"unknown profile {reference!r}. Bundled profiles: {', '.join(available)}. "
-            "Pass a path to a .json file to use your own."
-        )
-    text = (_profiles_dir() / f"{reference}.json").read_text(encoding="utf-8")
-    return _from_json(text, source=f"bundled:{reference}")
-
-
-def load_profile_file(path: Path) -> Profile:
-    """Load and validate a profile from a filesystem path."""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise ProfileError(f"cannot read profile {str(path)!r}: {exc}") from exc
-    return _from_json(text, source=str(path))
-
-
-def _from_json(text: str, source: str) -> Profile:
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ProfileError(f"{source}: invalid JSON on line {exc.lineno}: {exc.msg}") from exc
-    return Profile.from_dict(data, source=source)
-
-
-def starter_profile_json() -> str:
-    """The commented starting point ``padmap init`` writes out."""
-    return (_profiles_dir() / "starter.json").read_text(encoding="utf-8")
