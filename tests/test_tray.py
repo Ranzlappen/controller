@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from conftest import FakeController, make_state
 from padmap.backends import RecordingBackend
-from padmap.config import Profile, load_profile
+from padmap.config import Profile
 from padmap.engine import Engine, EngineStatus
+from padmap.loader import load_profile
 from padmap.tray import (
     PAUSE,
     PROFILE_PREFIX,

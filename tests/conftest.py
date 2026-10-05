@@ -10,9 +10,10 @@ from __future__ import annotations
 import pytest
 
 from padmap.backends import RecordingBackend
-from padmap.config import Profile, load_profile
+from padmap.config import Profile
 from padmap.devices import PadState, empty_state
 from padmap.engine import Engine
+from padmap.loader import load_profile
 
 
 def make_state(**inputs: bool | float) -> PadState:
