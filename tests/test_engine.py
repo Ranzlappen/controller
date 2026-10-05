@@ -11,8 +11,9 @@ import pytest
 
 from conftest import FakeController, make_state
 from padmap.backends import RecordingBackend
-from padmap.config import Profile, load_profile
+from padmap.config import Profile
 from padmap.engine import MAX_TICK_SECONDS, Engine
+from padmap.loader import load_profile
 
 
 def run_states(engine: Engine, states, step: float = 0.01, start: float = 0.0) -> None:
@@ -664,3 +665,220 @@ def test_reload_keeps_the_centres_measured_at_startup() -> None:
     engine.tick(5.0, make_state(left_x=0.12))
     assert engine.profile.name == "Second"
     assert engine.calibration.axes["left_x"].centre == pytest.approx(measured)
+
+
+# --- Breakpoint zones --------------------------------------------------------
+
+ZONED = {
+    "device": {"auto_centre": False},
+    "triggers": {
+        "rt": {
+            "hysteresis": 0.03,
+            "zones": [
+                {"from": 0.15, "to": 0.55, "action": "key:w"},
+                {"from": 0.55, "to": 0.9, "action": "key:shift"},
+                {"from": 0.9, "to": 1.0, "action": "mouse:left"},
+            ],
+        }
+    },
+}
+
+
+def test_each_trigger_zone_drives_its_own_action() -> None:
+    engine, backend, _ = engine_for(ZONED)
+    engine.tick(0.0, make_state())
+    engine.tick(0.1, make_state(rt=0.3))
+    assert backend.log() == ["key_down w"]
+    engine.tick(0.2, make_state(rt=0.95))
+    assert backend.log() == ["key_down w", "key_up w", "mouse_down left"]
+
+
+def test_leaving_a_zone_releases_it_without_being_asked() -> None:
+    """Zone changes go through the same release path as a button going up."""
+    engine, backend, _ = engine_for(ZONED)
+    engine.tick(0.0, make_state())
+    engine.tick(0.1, make_state(rt=0.3))
+    engine.tick(0.2, make_state(rt=0.0))
+    assert backend.log() == ["key_down w", "key_up w"]
+
+
+def test_a_trigger_below_every_zone_does_nothing() -> None:
+    engine, backend, _ = engine_for(ZONED)
+    engine.tick(0.0, make_state())
+    engine.tick(0.1, make_state(rt=0.1))
+    assert backend.log() == []
+
+
+def test_hysteresis_stops_a_trigger_on_a_boundary_machine_gunning() -> None:
+    engine, backend, _ = engine_for(ZONED)
+    engine.tick(0.0, make_state())
+    # Hover either side of the 0.55 boundary, as a thumb actually does.
+    for index, value in enumerate([0.5, 0.56, 0.54, 0.57, 0.53, 0.56]):
+        engine.tick(0.1 + index * 0.05, make_state(rt=value))
+    assert backend.log() == ["key_down w"], "one action, not six"
+
+
+def test_zones_release_on_shutdown() -> None:
+    engine, backend, _ = engine_for(ZONED)
+    engine.tick(0.0, make_state())
+    engine.tick(0.1, make_state(rt=0.7))
+    engine.release_all()
+    assert backend.log() == ["key_down shift", "key_up shift"]
+
+
+def test_stick_directions_take_zones_too() -> None:
+    """Push a little to walk, push hard to run."""
+    engine, backend, _ = engine_for(
+        {
+            "device": {"auto_centre": False},
+            "sticks": {
+                "left": {
+                    "mode": "keys",
+                    "deadzone": 0.0,
+                    "up": {
+                        "zones": [
+                            {"from": 0.25, "to": 0.7, "action": "key:w"},
+                            {"from": 0.7, "to": 1.0, "action": "key:shift"},
+                        ]
+                    },
+                }
+            },
+        }
+    )
+    engine.tick(0.0, make_state())
+    engine.tick(0.1, make_state(left_y=-0.4))
+    assert backend.log() == ["key_down w"]
+    engine.tick(0.2, make_state(left_y=-1.0))
+    assert backend.log()[-1] == "key_down shift"
+
+
+def test_a_direction_is_its_own_component_not_the_whole_magnitude() -> None:
+    """ "Up 0.8" must mean 80% up regardless of how far sideways the stick also is."""
+    engine, backend, _ = engine_for(
+        {
+            "device": {"auto_centre": False},
+            "sticks": {
+                "left": {"mode": "keys", "deadzone": 0.0, "threshold": 0.6, "right": "key:d"}
+            },
+        }
+    )
+    engine.tick(0.0, make_state())
+    # Full diagonal: the rightward component is ~0.7, below the 0.6... just above.
+    engine.tick(0.1, make_state(left_x=0.3, left_y=-1.0))
+    assert backend.log() == [], "mostly up is not 'right'"
+    engine.tick(0.2, make_state(left_x=1.0, left_y=-0.2))
+    assert backend.log() == ["key_down d"]
+
+
+def test_a_zoned_special_still_works() -> None:
+    engine, _, _ = engine_for(
+        {
+            "device": {"auto_centre": False},
+            "triggers": {
+                "lt": {"zones": [{"from": 0.9, "to": 1.0, "action": "special:toggle_pause"}]}
+            },
+        }
+    )
+    engine.tick(0.0, make_state())
+    engine.tick(0.1, make_state(lt=0.95))
+    assert engine.paused is True
+
+
+# --- Macros ------------------------------------------------------------------
+
+MACROED = {
+    "device": {"auto_centre": False},
+    "macros": {"cp": ["key:ctrl+c", {"wait": 0.05}, "key:ctrl+v"]},
+    "buttons": {"y": "macro:cp"},
+}
+
+
+def test_a_macro_plays_out_from_a_button_press() -> None:
+    engine, backend, _ = engine_for(MACROED)
+    engine.tick(0.0, make_state())
+    engine.tick(0.01, make_state(y=True))
+    engine.tick(0.02, make_state())
+    for moment in (0.04, 0.06, 0.09, 0.11):
+        engine.tick(moment, make_state())
+    assert backend.log() == [
+        "key_down ctrl+c",
+        "key_up ctrl+c",
+        "key_down ctrl+v",
+        "key_up ctrl+v",
+    ]
+
+
+def test_a_macro_finishes_after_the_button_is_released() -> None:
+    engine, backend, _ = engine_for(MACROED)
+    engine.tick(0.0, make_state())
+    engine.tick(0.01, make_state(y=True))
+    engine.tick(0.02, make_state())
+    assert engine.status().macros == ("cp",), "still running with the button up"
+    for moment in (0.04, 0.06, 0.09, 0.11):
+        engine.tick(moment, make_state())
+    assert engine.status().macros == ()
+
+
+def test_mashing_the_button_does_not_interleave_two_copies() -> None:
+    engine, backend, _ = engine_for(MACROED)
+    engine.tick(0.0, make_state())
+    for index in range(6):
+        engine.tick(0.01 + index * 0.005, make_state(y=index % 2 == 0))
+    assert backend.log().count("key_down ctrl+c") == 1
+
+
+def test_release_all_abandons_a_running_macro_cleanly() -> None:
+    engine, backend, _ = engine_for(
+        {
+            "device": {"auto_centre": False},
+            "macros": {"hold": [{"down": "key:shift"}, {"wait": 5.0}, {"up": "key:shift"}]},
+            "buttons": {"y": "macro:hold"},
+        }
+    )
+    engine.tick(0.0, make_state())
+    engine.tick(0.01, make_state(y=True))
+    assert backend.log() == ["key_down shift"]
+    engine.release_all()
+    assert backend.log() == ["key_down shift", "key_up shift"]
+
+
+def test_a_paused_engine_does_not_advance_macros() -> None:
+    engine, backend, _ = engine_for(
+        {
+            "device": {"auto_centre": False},
+            "macros": {"cp": ["key:ctrl+c", {"wait": 0.05}, "key:ctrl+v"]},
+            "buttons": {"y": "macro:cp", "back": "special:toggle_pause"},
+        }
+    )
+    engine.tick(0.0, make_state())
+    engine.tick(0.01, make_state(y=True))
+    engine.tick(0.02, make_state(back=True))
+    before = len(backend.events)
+    for moment in (0.1, 0.2, 0.3):
+        engine.tick(moment, make_state())
+    assert len(backend.events) == before
+
+
+# --- move: -------------------------------------------------------------------
+
+
+def test_a_move_action_nudges_the_pointer_and_repeats_while_held() -> None:
+    engine, backend, _ = engine_for(
+        {"device": {"auto_centre": False}, "buttons": {"x": "move:40,-10"}}
+    )
+    engine.tick(0.0, make_state())
+    for index in range(1, 6):
+        engine.tick(index * 0.05, make_state(x=True))
+    assert backend.log() == ["mouse_move 40,-10"] * 3
+
+
+def test_a_move_action_stops_when_released() -> None:
+    engine, backend, _ = engine_for(
+        {"device": {"auto_centre": False}, "buttons": {"x": "move:40,0"}}
+    )
+    engine.tick(0.0, make_state())
+    engine.tick(0.05, make_state(x=True))
+    before = len(backend.events)
+    for index in range(2, 8):
+        engine.tick(index * 0.05, make_state())
+    assert len(backend.events) == before

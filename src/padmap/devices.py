@@ -12,6 +12,7 @@ no controller and no display attached.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
@@ -243,6 +244,11 @@ class ControllerSource(Protocol):
 
 def _pygame() -> Any:  # pragma: no cover - thin import shim, needs the real package
     """Import pygame on demand with a friendly message if it is missing."""
+    # Set before the import: pygame prints its banner at import time, and SDL
+    # probes audio hardware padmap never uses — on a machine without a sound
+    # card that is a dozen lines of ALSA errors over the top of our own output.
+    os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+    os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
     try:
         import pygame
     except ImportError as exc:  # pragma: no cover - depends on the install
@@ -257,8 +263,6 @@ def _init_joystick() -> Any:  # pragma: no cover - needs the real package
     """Bring up just the joystick subsystem, with no video window."""
     pygame = _pygame()
     # A remapper never opens a window; the dummy driver keeps SDL from trying.
-    import os
-
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
     pygame.init()
     pygame.joystick.init()

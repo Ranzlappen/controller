@@ -21,9 +21,11 @@ from typing import Any
 from padmap.actions import Action
 from padmap.backends import OutputBackend
 from padmap.calibration import STICK_AXES, Calibration, CalibrationError, CentreSampler
-from padmap.config import Binding, Layer, Profile, StickConfig
+from padmap.config import Binding, Layer, Profile, StickConfig, ZonedInput
 from padmap.curves import Accelerator, Smoother, SubPixel, stick_vector
 from padmap.devices import DPAD_NAMES, ControllerSource, PadState
+from padmap.macros import MacroRunner
+from padmap.zones import ZoneTracker
 
 __all__ = ["Engine", "EngineStatus"]
 
@@ -61,6 +63,7 @@ class EngineStatus:
     events: int
     drift: dict[str, float]
     settling: bool
+    macros: tuple[str, ...] = ()
 
     @property
     def worst_drift(self) -> float:
@@ -115,6 +118,8 @@ class Engine:
         self._next_pulse: dict[str, float] = {}
         # stick name -> carried fractional pixels / scroll clicks
         self._carry: dict[str, SubPixel] = {}
+        self._zone_tracker = ZoneTracker()
+        self._macros = MacroRunner()
         self._smoothers: dict[str, Smoother] = {}
         self._accelerators: dict[str, Accelerator] = {}
         self._last_tick: float | None = None
@@ -212,6 +217,11 @@ class Engine:
         for slot, binding, is_down in self._layered_inputs(state):
             self._apply_binding(slot, binding, is_down, now)
 
+        if not self.paused:
+            # Macros run on their own clock once started, so a macro mid-flight
+            # keeps playing even while the sticks are still being measured.
+            self._macros.advance(now, self)
+
         if not self.paused and not settling:
             self._apply_analogue(state, delta)
 
@@ -219,6 +229,8 @@ class Engine:
         """Let go of every held key and mouse button. Safe to call twice."""
         for slot in list(self._active):
             self._release(slot)
+        self._macros.release_all(self)
+        self._zone_tracker.clear()
         self._latched.clear()
         self._next_pulse.clear()
         for carry in self._carry.values():
@@ -247,6 +259,7 @@ class Engine:
             events=self._events,
             drift=dict(self._measured_centres),
             settling=self._centre_deadline is not None and self._centre_deadline != 0.0,
+            macros=self._macros.active,
         )
 
     def _emit_status(self, now: float) -> None:
@@ -367,6 +380,7 @@ class Engine:
         self._smoothers.clear()
         self._accelerators.clear()
         self._carry.clear()
+        self._zone_tracker.clear()
 
         self.profile = profile
         # Keep the rest positions measured at startup — the profile changed,
@@ -385,12 +399,8 @@ class Engine:
             if binding.action.kind == "special":
                 yield f"dpad.{name}", binding, state.dpad.get(name, False)
         for name, trigger in self.profile.triggers.items():
-            if trigger.binding.action.kind == "special":
-                yield (
-                    f"trigger.{name}",
-                    trigger.binding,
-                    self.axis(state, name) >= trigger.threshold,
-                )
+            if any(b.action.kind == "special" for b in trigger.bindings):
+                yield from self._zoned(f"trigger.{name}", trigger, self.axis(state, name))
 
     def _layered_inputs(self, state: PadState) -> Iterator[tuple[str, Binding, bool]]:
         """Yield every non-special input, resolved through the active layers."""
@@ -406,21 +416,34 @@ class Engine:
 
         for name in self._input_names("triggers"):
             trigger = self._resolve("triggers", name)
-            if trigger is not None and trigger.binding.action.kind != "special":
-                yield (
-                    f"trigger.{name}",
-                    trigger.binding,
-                    self.axis(state, name) >= trigger.threshold,
-                )
+            if trigger is not None and not any(
+                b.action.kind == "special" for b in trigger.bindings
+            ):
+                yield from self._zoned(f"trigger.{name}", trigger, self.axis(state, name))
 
         for name in self._input_names("sticks"):
             stick = self._resolve("sticks", name)
             if stick is None or stick.mode != "keys":
                 continue
-            for direction, is_down in self._stick_directions(stick, state, name).items():
-                binding = stick.directions.get(direction)
-                if binding is not None:
-                    yield f"stick.{name}.{direction}", binding, is_down
+            pushes = self._stick_pushes(stick, state, name)
+            for direction, amount in pushes.items():
+                zoned = stick.directions.get(direction)
+                if zoned is not None:
+                    yield from self._zoned(f"stick.{name}.{direction}", zoned, amount)
+
+    def _zoned(
+        self, slot: str, zoned: ZonedInput, value: float
+    ) -> Iterator[tuple[str, Binding, bool]]:
+        """Turn one analogue reading into a down/up answer per zone.
+
+        Each zone gets its own slot, with only the active one down. That makes
+        every zone an ordinary binding as far as the rest of the engine is
+        concerned: hold, turbo, toggle and — crucially — release-on-leaving all
+        come for free, because leaving a zone simply reads as that slot going up.
+        """
+        active = self._zone_tracker.update(slot, zoned.zone_set, value)
+        for index, binding in enumerate(zoned.bindings):
+            yield f"{slot}#{index}", binding, index == active
 
     def _input_names(self, section: str) -> list[str]:
         """Every input name bound by the base profile or any active layer."""
@@ -470,6 +493,10 @@ class Engine:
             effective = slot in self._latched
         else:
             effective = is_down
+
+        if action.kind == "macro":
+            self._run_macro(action, effective, pressed, now)
+            return
 
         if binding.turbo_hz > 0:
             self._pulse(slot, action, effective, now, binding.turbo_hz)
@@ -528,6 +555,23 @@ class Engine:
             dx, dy = _scroll_step(action.direction)
             self._events += 1
             self.backend.scroll(dx, dy)
+        elif action.kind == "move":
+            self._events += 1
+            self.backend.mouse_move(action.dx, action.dy)
+
+    # --- MacroSink: how a running macro reaches the backend ------------------
+
+    def press(self, action: Action) -> None:
+        """Hold an action down on a macro's behalf."""
+        self._press(action)
+
+    def release(self, action: Action) -> None:
+        """Let a macro's action back up."""
+        self._unpress(action)
+
+    def fire(self, action: Action) -> None:
+        """Perform a macro's one-shot action."""
+        self._fire_once(action)
 
     def _press(self, action: Action) -> None:
         if action.kind == "key":
@@ -549,6 +593,16 @@ class Engine:
         action = self._active.pop(slot, None)
         if action is not None:
             self._unpress(action)
+
+    def _run_macro(self, action: Action, effective: bool, pressed: bool, now: float) -> None:
+        """Start a macro on press, and cut it short on release if it allows that."""
+        macro = self.profile.macros.get(action.macro)
+        if macro is None:  # pragma: no cover - the loader rejects dangling names
+            return
+        if pressed or (effective and not self._macros.is_running(macro.name)):
+            self._macros.start(macro, now)
+        elif not effective:
+            self._macros.cancel_interruptible([macro.name], self)
 
     def _run_special(self, slot: str, action: Action, is_down: bool, pressed: bool) -> None:
         """Handle an engine-level special.
@@ -652,10 +706,14 @@ class Engine:
                 self._events += 1
                 self.backend.scroll(dx, dy)
 
-    def _stick_directions(
-        self, stick: StickConfig, state: PadState, name: str
-    ) -> Mapping[str, bool]:
-        """Which of up/down/left/right a stick currently counts as pressing."""
+    def _stick_pushes(self, stick: StickConfig, state: PadState, name: str) -> Mapping[str, float]:
+        """How far the stick is pushed in each of the four directions, 0..1.
+
+        A direction's value is its own signed component, so "up 0.8" means the
+        stick is 80% of the way up regardless of how far left or right it also
+        is. That is what makes zones on a direction mean something intuitive:
+        push a little to walk, push hard to run.
+        """
         x, y = stick_vector(
             self.axis(state, f"{name}_x"),
             self.axis(state, f"{name}_y"),
@@ -665,14 +723,13 @@ class Engine:
             invert_y=stick.invert_y,
             outer=stick.outer_deadzone,
         )
-        threshold = stick.threshold
-        active = {
-            "up": y <= -threshold,
-            "down": y >= threshold,
-            "left": x <= -threshold,
-            "right": x >= threshold,
+        pushes = {
+            "up": max(0.0, -y),
+            "down": max(0.0, y),
+            "left": max(0.0, -x),
+            "right": max(0.0, x),
         }
-        return {direction: active[direction] for direction in DPAD_NAMES}
+        return {direction: pushes[direction] for direction in DPAD_NAMES}
 
     # --- Misc ----------------------------------------------------------------
 
