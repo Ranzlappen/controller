@@ -6,6 +6,67 @@ All notable changes to **padmap** are recorded here. Format follows
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-10-05
+
+Setup, breakpoints and macros. v0.3.0 made padmap livable; this makes it
+configurable without guessing. The headline is `padmap setup`, which measures
+the pad in front of you instead of asking you to infer numbers from a README.
+
+### Added
+
+- **`padmap setup`** — guided configuration in six steps: environment checks,
+  device choice, identifying each button one at a time by pressing it, stick
+  calibration, trigger calibration, and a focus/background probe. It then
+  proposes every setting *with a reason* and writes a complete profile. The
+  suggested deadzone comes from the noise it measured, which is why a
+  calibrated pad gets ~0.05 where an uncalibrated one needs 0.20.
+- **`padmap doctor`** — seven checks, each non-passing one carrying a fix:
+  Python version, display session (Wayland gets named), keyboard/mouse output,
+  controller detection, focused-window detection, background capability, and
+  the tray extra. Exits non-zero when something will actually stop padmap, so
+  it is usable in a script.
+- **Breakpoint zones** on triggers *and* stick directions. Bind ranges of an
+  analogue input: a light trigger pull taps, a squeeze holds. Each zone takes
+  the normal binding options, exactly one is active at a time, and leaving a
+  zone releases it through the same path as a button going up. `hysteresis`
+  (default 0.03) is what stops a thumb resting on a boundary machine-gunning
+  two actions. A stick direction's value is its own component, so "up 0.8"
+  means 80% up however far sideways the stick also is.
+- **Macros** — a named sequence of taps, explicit holds and waits, played out
+  across ticks rather than slept through, so the rest of the pad keeps working
+  during one. Re-pressing does not start a second copy; `interruptible` makes
+  release cut one short; anything a macro still holds when it ends is released.
+- **`move:<dx>,<dy>`** — nudge the pointer by pixels from any button, repeating
+  while held. With `key`, `mouse`, `scroll`, `move` and `macro`, anything a
+  keyboard or mouse can do is now bindable, pointer and wheel motion included.
+- **Side mouse buttons** (`mouse:x1`, `mouse:x2`), mapped to whatever the
+  platform calls them and left inert where there is no equivalent, rather than
+  crashing the session.
+- **`padmap.focus`** — which window has focus, via ctypes on Windows and the
+  tools X11 and macOS already ship. A diagnostic only, and no new dependency.
+
+### Changed
+
+- `TriggerConfig` is now `ZonedInput`, shared by triggers and stick directions.
+  `threshold` is sugar for a single zone from that point to fully pressed, so
+  every profile written before this release behaves identically.
+- `config.py` split up as it crossed the 800-line limit: `validate.py` holds the
+  value primitives, `loader.py` is now the only module that knows profiles live
+  in files. `load_profile` and friends import from `padmap.loader`.
+- Bundled profiles exercise the new features: `fps` binds RT as zones (a light
+  pull taps four times a second, a squeeze holds), and `starter` demonstrates
+  macros, zones and `move:` as the written reference.
+
+### Fixed
+
+- A headless session was told to `pip install pynput` when pynput was already
+  installed — it raises `ImportError` both when absent and when it cannot
+  resolve a backend, and only the first is fixed by installing anything. Found
+  by `padmap doctor` on its first run.
+- pygame's banner and SDL's audio probing no longer print over padmap's own
+  output. On a machine without a sound card that was a dozen ALSA errors
+  covering the thing you ran.
+
 ## [0.3.0] — 2026-09-18
 
 Usability pass. v0.2.0 fixed how the sticks *feel*; this fixes how you actually
@@ -147,7 +208,8 @@ Sections to use (omit any that don't apply for a given release):
   Added | Changed | Deprecated | Removed | Fixed | Security
 -->
 
-[Unreleased]: https://github.com/Ranzlappen/controller/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Ranzlappen/controller/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Ranzlappen/controller/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Ranzlappen/controller/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Ranzlappen/controller/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Ranzlappen/controller/releases/tag/v0.1.0

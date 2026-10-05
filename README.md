@@ -25,6 +25,8 @@ It is deliberately small: **two runtime dependencies** and one command. It can r
 
 | I want to... | Do this |
 | --- | --- |
+| **Set it up from scratch** | `padmap setup` — measures your pad and writes a profile |
+| **Find out why it won't work** | `padmap doctor` |
 | **Run it in the background** | `padmap run --detach`, then `padmap status` / `padmap stop` |
 | **Stop it typing into my own terminal** | `padmap run --delay 3` — focus another window while it counts down |
 | **Control it from the system tray** | `pip install 'padmap[tray]'`, then `padmap tray` |
@@ -40,7 +42,9 @@ It is deliberately small: **two runtime dependencies** and one command. It can r
 | Reach a second set of bindings | Hold **RB** — the `nav` layer |
 | Pause without quitting | Press the **Back / View** button on the pad |
 | Stop everything | `Ctrl-C` in the terminal — every held key is released |
-| Fix a button that maps to the wrong thing | `padmap monitor` for the real index, then set it under `device.layout` |
+| Fix a button that maps to the wrong thing | `padmap setup` identifies them one by one |
+| Map different things to different trigger pulls | `zones` — see [Breakpoints](#breakpoints-ranges-of-a-trigger-or-stick) |
+| Run a sequence of keystrokes | A `macro` — see [Macros](#macros) |
 | Work out why nothing happens | [`docs/troubleshooting.md`](./docs/troubleshooting.md) — it is a permission problem more often than not |
 
 ---
@@ -62,6 +66,15 @@ pip install .
 ```
 
 ### First run
+
+```
+padmap doctor           # can this machine run padmap, and what will get in the way?
+padmap setup            # guided: pick the pad, identify its buttons, calibrate, suggest defaults
+```
+
+`padmap setup` is the short path. It walks six steps — environment checks, device choice, identifying each button one at a time, stick calibration, trigger calibration, and a focus/background probe — then proposes every setting with a reason and writes a complete profile. The deadzone it suggests is derived from the noise it actually measured, which is why a calibrated pad gets ~0.05 where an uncalibrated one needs 0.20.
+
+Prefer to drive it yourself:
 
 ```
 padmap devices          # is the pad seen at all?
@@ -140,14 +153,18 @@ A profile is a JSON file. Every controller input maps to an **action string**:
 | --- | --- | --- |
 | `key:<name>` | Holds a key while the input is held | `key:w`, `key:page_up`, `key:f5` |
 | `key:<a>+<b>` | Holds a combo, modifiers first | `key:ctrl+shift+s`, `key:alt+left` |
-| `mouse:<button>` | Holds a mouse button (`left`, `middle`, `right`) | `mouse:left` |
+| `mouse:<button>` | Holds a mouse button. `left`, `middle`, `right` everywhere; `x1`/`x2` where the platform has them | `mouse:left` |
 | `scroll:<dir>` | Scrolls repeatedly while held (`up`, `down`, `left`, `right`) | `scroll:down` |
+| `move:<dx>,<dy>` | Nudges the pointer by pixels, repeating while held. Negative y is up | `move:25,0`, `move:0,-25` |
 | `text:<string>` | Types a string once per press | `text:gg wp` |
+| `macro:<name>` | Runs a named sequence from the `macros` section | `macro:copy-paste` |
 | `special:toggle_pause` | Suspends and resumes all output | — |
 | `special:precision` | While held, slows every stick to its `precision` factor | — |
 | `special:layer:<name>` | While held, switches to a layer from the `layers` section | `special:layer:nav` |
 | `special:quit` | Stops padmap from the pad | — |
 | `noop` | Nothing — switches an input off without deleting the line | — |
+
+Between `key`, `mouse`, `scroll`, `move` and `macro`, anything a keyboard or mouse can do is bindable — including pointer motion and wheel motion from a button, not just from a stick. `x1`/`x2` are the one caveat: pynput names them differently per backend and macOS has none, so padmap maps what it can and leaves the binding inert rather than crashing where it cannot.
 
 Key names are the obvious ones (`a`, `7`, `/`, `space`, `enter`, `esc`, `tab`, `shift`, `ctrl`, `alt`, `cmd`, `up`, `page_down`, `f1`–`f20`, `media_volume_up`, …) plus friendly aliases (`escape`, `return`, `pgup`, `win`). A name padmap does not know is rejected when the profile loads, with the list of valid names — it never fails silently at 2am mid-game.
 
@@ -232,6 +249,81 @@ It is an **optional extra** — it pulls in pystray and Pillow, and the core ins
 It tells you the profile, which layer is held, whether the precision modifier is down, how much stick drift is being corrected for, and how many events have actually been sent — so "is this thing even working?" is answerable at a glance. While padmap is measuring your sticks at startup it says `◌ centring sticks…`, and pausing turns the line into `⏸ PAUSED`.
 
 When output is piped or detached, the line is suppressed rather than scrolled — otherwise a detached session's log would fill with thousands of near-identical rows and bury the messages worth reading.
+
+### Breakpoints: ranges of a trigger or stick
+
+A trigger is not a button — it reports how far it is pulled, and the useful thing to do with that is bind *ranges* of it. Same for how far a stick is pushed in one direction.
+
+```json
+"triggers": {
+  "rt": {
+    "hysteresis": 0.03,
+    "zones": [
+      { "from": 0.25, "to": 0.75, "action": "mouse:left", "turbo": 4 },
+      { "from": 0.75, "to": 1.0,  "action": "mouse:left" }
+    ]
+  }
+}
+```
+
+That is the bundled `fps` profile: a light pull taps the trigger four times a second, squeezing it all the way holds the button down. Each zone takes every normal binding option — `turbo`, `toggle`, `repeat`.
+
+Stick directions work the same way, with each direction's own component as the value, so "up 0.8" means 80% up however far sideways the stick also is:
+
+```json
+"sticks": {
+  "left": {
+    "mode": "keys",
+    "up": { "zones": [
+      { "from": 0.25, "to": 0.7, "action": "key:w" },
+      { "from": 0.7,  "to": 1.0, "action": "key:shift+w" }
+    ] }
+  }
+}
+```
+
+Things worth knowing:
+
+- **Exactly one zone is active at a time**, and leaving a zone releases it through the same path as a button going up — so no stuck keys when you squeeze past a boundary. The flip side is that zones cannot stack: to add shift in the outer zone, bind the combo (`key:shift+w`) rather than expecting `key:shift` to join the `key:w` below it. That costs a momentary `w` release as you cross; bind sprint to a button if that matters to you.
+- **`hysteresis` (default 0.03) is what makes this usable.** A thumb resting on a boundary crosses it many times a second; without a margin that machine-guns two actions. Once a zone is active it keeps a little territory beyond its own edges.
+- **Gaps are allowed** — a dead stretch at the start of a trigger's travel is often exactly what you want. A zone fully *inside* an earlier one is rejected, because earlier zones win and the inner one could never fire.
+- `threshold` is still there for the simple case; it means a single zone from that point to fully pressed.
+
+### Macros
+
+A named sequence, played out over time:
+
+```json
+"macros": {
+  "copy-paste": { "steps": ["key:ctrl+c", { "wait": 0.05 }, "key:ctrl+v"] },
+  "shift-click": {
+    "steps": [{ "down": "key:shift" }, "mouse:left", { "up": "key:shift" }],
+    "interruptible": true
+  }
+},
+"buttons": { "rs": "macro:copy-paste" }
+```
+
+| Step | Means |
+| --- | --- |
+| `"key:ctrl+c"` | Tap it — press, hold briefly, release |
+| `{ "wait": 0.05 }` | Pause, in seconds |
+| `{ "down": "key:shift" }` | Press and keep holding |
+| `{ "up": "key:shift" }` | Release |
+
+A bare action becomes press + a 20 ms hold + release, because a zero-length keypress is missed by a surprising number of applications; set `tap` to change that.
+
+Macros do **not** block the mapping loop — a running macro is advanced a little on each poll, so the rest of the pad keeps working through a sequence with waits in it. Re-pressing the button while one is in flight does nothing rather than starting a second copy. By default a macro runs to completion even if you let go; `"interruptible": true` makes release cut it short. Either way, anything it still holds when it ends is released — a macro that latches a modifier with no way back up is exactly the stuck-key bug padmap treats as its worst failure.
+
+### Checking the machine
+
+```
+padmap doctor
+```
+
+Seven checks with a fix attached to each one that isn't passing: Python version, display session (this is where Wayland gets called out), keyboard/mouse output, controller detection, focused-window detection, background-session capability, and whether the tray extra is installed. It exits non-zero if something will actually stop padmap working, so it is usable in a script.
+
+The focused-window check is a **diagnostic, not a prerequisite** — padmap injects at the OS level, so input reaches the focused window whether or not padmap can read which window that is.
 
 ### Drift, and why a deadzone isn't enough
 
@@ -350,6 +442,11 @@ controller/
 │   ├── config.py             ← profile schema, loading, validation
 │   ├── curves.py             ← deadzones, curves, smoothing, acceleration
 │   ├── calibration.py        ← measuring stick drift and travel
+│   ├── zones.py              ← breakpoint ranges and their hysteresis
+│   ├── macros.py             ← macro model and its tick-driven runner
+│   ├── wizard.py             ← `padmap setup`
+│   ├── doctor.py             ← `padmap doctor` environment checks
+│   ├── focus.py              ← which window has focus (diagnostic)
 │   ├── display.py            ← the live status line and dry-run trace
 │   ├── runtime.py            ← background sessions: state file, stop protocol
 │   ├── tray.py               ← optional system-tray control surface

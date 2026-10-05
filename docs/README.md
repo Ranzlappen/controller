@@ -4,6 +4,7 @@ Longer-form documentation for **padmap**. The root [`README.md`](../README.md) c
 
 | Document | What's in it |
 | --- | --- |
+| [`architecture.md`](./architecture.md) | Tech-stack choices and the CI shape, in more detail than `CLAUDE.md` has room for. |
 | [`troubleshooting.md`](./troubleshooting.md) | "It doesn't work" — no controller found, no input reaching apps, wrong buttons, drifting sticks, stuck keys. |
 
 For architecture, conventions and CI, see [`CLAUDE.md`](../CLAUDE.md) at the repo root — that is the source of truth, and it wins over anything here if the two disagree.
