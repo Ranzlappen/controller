@@ -28,11 +28,12 @@ from padmap.cli import (
     detached_argv,
     main,
     merge_calibration_into_file,
-    sample_axes,
 )
-from padmap.config import Profile, ProfileError, load_profile
+from padmap.config import Profile, ProfileError
 from padmap.display import DryRunPrinter, StatusLine, format_duration, render_status
 from padmap.engine import EngineStatus
+from padmap.loader import load_profile
+from padmap.wizard import sample_axes
 
 
 def test_no_command_prints_help(capsys) -> None:

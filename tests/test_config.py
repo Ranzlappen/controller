@@ -12,14 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from padmap.config import (
-    Binding,
-    Profile,
-    ProfileError,
-    bundled_profile_names,
-    load_profile,
-    starter_profile_json,
-)
+from padmap.config import Binding, Profile, ProfileError
+from padmap.loader import bundled_profile_names, load_profile, starter_profile_json
 
 MINIMAL = {"name": "Test", "buttons": {"a": "mouse:left"}}
 
@@ -219,7 +213,8 @@ def test_trigger_mode_reaches_the_layout() -> None:
 def test_describe_covers_every_bound_input() -> None:
     text = "\n".join(load_profile("fps").describe())
     assert "buttons.a: key:space" in text
-    assert "trigger.rt: mouse:left" in text
+    # fps now binds RT as zones: a light pull taps, a full pull holds.
+    assert "trigger.rt: 0.25..0.75 -> mouse:left" in text
     assert "stick.left: keys" in text
     assert "up: key:w" in text
     assert "[toggle]" in text

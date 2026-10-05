@@ -1,6 +1,6 @@
 {
   "name": "My profile",
-  "description": "Starting point written by `padmap init`. Every option is spelled out — delete what you don't want. Run: padmap run -w -p <this file>",
+  "description": "Starting point written by `padmap init`. Every feature is spelled out \u2014 delete what you don't want. Prefer `padmap setup`, which measures your pad instead of guessing.",
   "poll_hz": 120,
   "device": {
     "match": "xbox",
@@ -18,7 +18,7 @@
     "back": "special:toggle_pause",
     "start": "text:hello from padmap",
     "ls": "mouse:middle",
-    "rs": "noop"
+    "rs": "macro:copy-paste"
   },
   "dpad": {
     "up": "key:up",
@@ -27,8 +27,27 @@
     "right": "key:right"
   },
   "triggers": {
-    "lt": { "action": "key:page_up", "threshold": 0.5, "turbo": 6 },
-    "rt": { "action": "key:page_down", "threshold": 0.5, "turbo": 6 }
+    "lt": {
+      "action": "key:page_up",
+      "threshold": 0.5,
+      "turbo": 6
+    },
+    "rt": {
+      "hysteresis": 0.03,
+      "zones": [
+        {
+          "from": 0.15,
+          "to": 0.6,
+          "action": "key:page_down",
+          "turbo": 4
+        },
+        {
+          "from": 0.6,
+          "to": 1.0,
+          "action": "key:end"
+        }
+      ]
+    }
   },
   "sticks": {
     "left": {
@@ -58,14 +77,38 @@
         "a": "key:media_play_pause",
         "b": "key:media_volume_mute",
         "x": "key:ctrl+c",
-        "y": "key:ctrl+v"
+        "y": "key:ctrl+v",
+        "lb": "macro:hold-shift-and-click"
       },
       "dpad": {
-        "up": { "action": "key:media_volume_up", "turbo": 8 },
-        "down": { "action": "key:media_volume_down", "turbo": 8 },
-        "left": "key:alt+left",
-        "right": "key:alt+right"
+        "up": "move:0,-25",
+        "down": "move:0,25",
+        "left": "move:-25,0",
+        "right": "move:25,0"
       }
+    }
+  },
+  "macros": {
+    "copy-paste": {
+      "steps": [
+        "key:ctrl+c",
+        {
+          "wait": 0.05
+        },
+        "key:ctrl+v"
+      ]
+    },
+    "hold-shift-and-click": {
+      "steps": [
+        {
+          "down": "key:shift"
+        },
+        "mouse:left",
+        {
+          "up": "key:shift"
+        }
+      ],
+      "interruptible": true
     }
   }
 }

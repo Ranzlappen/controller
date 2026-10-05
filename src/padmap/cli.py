@@ -23,20 +23,12 @@ from padmap import __version__, runtime
 from padmap.actions import ActionError
 from padmap.backends import BackendError, RecordingBackend
 from padmap.calibration import (
-    STICK_AXES,
     Calibration,
     CalibrationError,
     CentreSampler,
     RangeSampler,
 )
-from padmap.config import (
-    Profile,
-    ProfileError,
-    bundled_profile_names,
-    load_profile,
-    load_profile_file,
-    starter_profile_json,
-)
+from padmap.config import Profile, ProfileError
 from padmap.devices import DeviceError
 from padmap.display import (
     RUNNING,
@@ -45,6 +37,13 @@ from padmap.display import (
     format_duration,
 )
 from padmap.engine import Engine
+from padmap.loader import (
+    bundled_profile_names,
+    load_profile,
+    load_profile_file,
+    starter_profile_json,
+)
+from padmap.wizard import run_setup, sample_axes
 
 __all__ = ["build_parser", "main"]
 
@@ -170,6 +169,25 @@ def build_parser() -> argparse.ArgumentParser:
     tray.add_argument("-w", "--watch", action="store_true", help="reload the profile on change")
     tray.set_defaults(handler=_cmd_tray)
 
+    setup = subcommands.add_parser(
+        "setup", help="guided first-run setup: device, layout, calibration, defaults"
+    )
+    setup.add_argument(
+        "-o",
+        "--out",
+        type=Path,
+        default=Path("padmap-profile.json"),
+        help="where to write the profile (default: padmap-profile.json)",
+    )
+    setup.add_argument("--name", default="", help="name for the generated profile")
+    setup.add_argument("-f", "--force", action="store_true", help="overwrite an existing file")
+    setup.set_defaults(handler=_cmd_setup)
+
+    doctor = subcommands.add_parser(
+        "doctor", help="check this machine can run padmap, and what will get in the way"
+    )
+    doctor.set_defaults(handler=_cmd_doctor)
+
     status = subcommands.add_parser("status", help="is a padmap session running?")
     status.set_defaults(handler=_cmd_status)
 
@@ -253,30 +271,6 @@ def _cmd_init(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def sample_axes(
-    controller: Any,
-    seconds: float,
-    consume: Any,
-    clock: Any = time.monotonic,
-    sleep: Any = time.sleep,
-    interval: float = 0.01,
-) -> int:
-    """Poll a controller for ``seconds`` and hand each reading to ``consume``.
-
-    Split out from the interactive command so the sampling loop can be tested
-    against a fake controller — the prompts around it are the only part that
-    genuinely needs a person and a pad.
-    """
-    deadline = clock() + seconds
-    polls = 0
-    while clock() < deadline:
-        state = controller.poll()
-        consume({name: state.axis(name) for name in STICK_AXES})
-        polls += 1
-        sleep(interval)
-    return polls
-
-
 def merge_calibration_into_file(path: Path, calibration: Calibration) -> None:
     """Write a measured calibration into an existing profile's device block.
 
@@ -354,6 +348,33 @@ def _cmd_tray(args: argparse.Namespace) -> int:  # pragma: no cover - needs a de
         backend.close()
         runtime.clear_state()
         runtime.clear_stop()
+    return EXIT_OK
+
+
+def _cmd_setup(args: argparse.Namespace) -> int:  # pragma: no cover - interactive
+    """Run the guided setup wizard."""
+    return run_setup(args.out, force=args.force, name=args.name)
+
+
+def _cmd_doctor(_args: argparse.Namespace) -> int:
+    """Report what this machine can and cannot do, and how to fix the gaps."""
+    from padmap.doctor import FAIL, WARN, evaluate, probe, worst
+
+    checks = evaluate(probe())
+    print("padmap doctor\n")
+    for check in checks:
+        print(f"  {check.mark} {check.name:<22} {check.detail}")
+        if check.fix and check.status != "ok":
+            print(f"      → {check.fix}")
+
+    verdict = worst(checks)
+    if verdict == FAIL:
+        print("\nSomething here will stop padmap working. See the arrows above.")
+        return EXIT_ERROR
+    if verdict == WARN:
+        print("\nUsable, with the caveats above.")
+    else:
+        print("\nAll good. Next: padmap setup")
     return EXIT_OK
 
 
