@@ -105,10 +105,15 @@ KEY_ALIASES: dict[str, str] = {
     "win": "cmd",
 }
 
-#: Mouse buttons that exist on every platform pynput supports. Side buttons
-#: (x1/x2) are deliberately excluded — they are named differently per backend
-#: and would make a profile non-portable.
-MOUSE_BUTTONS: frozenset[str] = frozenset({"left", "middle", "right"})
+#: Mouse buttons available everywhere pynput runs.
+PORTABLE_MOUSE_BUTTONS: frozenset[str] = frozenset({"left", "middle", "right"})
+
+#: Side buttons. pynput names these differently per backend and macOS has no
+#: equivalent at all, so the backend maps what it can and ignores the rest
+#: rather than crashing — a profile using them is simply less portable.
+SIDE_MOUSE_BUTTONS: frozenset[str] = frozenset({"x1", "x2"})
+
+MOUSE_BUTTONS: frozenset[str] = PORTABLE_MOUSE_BUTTONS | SIDE_MOUSE_BUTTONS
 
 SCROLL_DIRECTIONS: frozenset[str] = frozenset({"up", "down", "left", "right"})
 
@@ -127,9 +132,16 @@ PARAMETERISED_COMMANDS: frozenset[str] = frozenset({"layer"})
 KEY = "key"
 MOUSE = "mouse"
 SCROLL = "scroll"
+MOVE = "move"
 TEXT = "text"
+MACRO = "macro"
 SPECIAL = "special"
 NOOP_KIND = "noop"
+
+#: Largest single pointer nudge a `move:` action may ask for. Generous enough
+#: for "jump to the other monitor", small enough that a typo cannot fling the
+#: cursor somewhere unrecoverable.
+MAX_MOVE_PIXELS = 4000
 
 
 # --- The action value --------------------------------------------------------
@@ -150,6 +162,11 @@ class Action:
     text: str = ""
     command: str = ""
     argument: str = ""
+    #: Pixel delta for ``move:`` actions.
+    dx: int = 0
+    dy: int = 0
+    #: Name of the macro a ``macro:`` action runs.
+    macro: str = ""
     source: str = ""
 
     @property
@@ -169,8 +186,12 @@ class Action:
 
     @property
     def is_repeatable(self) -> bool:
-        """True when holding the input should keep re-firing the action."""
-        return self.kind == SCROLL
+        """True when holding the input should keep re-firing the action.
+
+        Both scrolling and nudging the pointer are *rates* when held: a d-pad
+        held down should keep scrolling or keep moving, not act once.
+        """
+        return self.kind in (SCROLL, MOVE)
 
     @property
     def is_modifier(self) -> bool:
@@ -226,6 +247,28 @@ def _parse_member(payload: str, allowed: frozenset[str], label: str, source: str
             f"unknown {label} {payload!r} in {source!r}. Valid values: {', '.join(sorted(allowed))}"
         )
     return value
+
+
+def _parse_move(payload: str, source: str) -> Action:
+    """Parse ``move:<dx>,<dy>`` — a relative pointer nudge in pixels."""
+    parts = payload.split(",")
+    if len(parts) != 2:
+        raise ActionError(
+            f"{source!r} needs two numbers, e.g. 'move:20,0' (right) or "
+            "'move:0,-20' (up). Negative y is up, matching the screen."
+        )
+    values = []
+    for part in parts:
+        try:
+            values.append(int(round(float(part.strip()))))
+        except ValueError as exc:
+            raise ActionError(f"{source!r}: {part.strip()!r} is not a number") from exc
+    dx, dy = values
+    if abs(dx) > MAX_MOVE_PIXELS or abs(dy) > MAX_MOVE_PIXELS:
+        raise ActionError(f"{source!r}: a single nudge is capped at {MAX_MOVE_PIXELS} px per axis")
+    if dx == 0 and dy == 0:
+        raise ActionError(f"{source!r} moves nowhere — use 'noop' to disable an input")
+    return Action(kind=MOVE, dx=dx, dy=dy, source=source)
 
 
 def _parse_special(payload: str, source: str) -> Action:
@@ -292,6 +335,17 @@ def parse_action(spec: str | None) -> Action:
             direction=_parse_member(payload, SCROLL_DIRECTIONS, "scroll direction", source),
             source=source,
         )
+    if kind == MOVE:
+        return _parse_move(payload.strip(), source)
+    if kind == MACRO:
+        name = payload.strip().lower()
+        if not all(ch.isalnum() or ch in "_-" for ch in name):
+            raise ActionError(
+                f"invalid macro name {payload.strip()!r} in {source!r} — use letters, "
+                "digits, '-' or '_'. The name must match a key under the profile's "
+                "'macros' section."
+            )
+        return Action(kind=MACRO, macro=name, source=source)
     if kind == TEXT:
         # Whitespace is meaningful here, so the raw payload is kept as typed.
         return Action(kind=TEXT, text=payload, source=source)
@@ -300,5 +354,5 @@ def parse_action(spec: str | None) -> Action:
 
     raise ActionError(
         f"unknown action kind {kind!r} in {source!r}. "
-        f"Valid kinds: key, mouse, scroll, text, special, noop"
+        f"Valid kinds: key, mouse, scroll, move, text, macro, special, noop"
     )

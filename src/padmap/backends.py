@@ -12,6 +12,7 @@ should never need a display.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -127,27 +128,36 @@ class RecordingBackend:
 class PynputBackend:  # pragma: no cover - drives the real desktop
     """Synthesises real keyboard and mouse input through pynput."""
 
-    def __init__(self) -> None:
+    def __init__(self, warn: Callable[[str], None] | None = None) -> None:
+        self._warn = warn or (lambda message: print(f"padmap: {message}", file=sys.stderr))
         try:
             from pynput import keyboard, mouse
         except ImportError as exc:
+            # pynput raises ImportError for two very different reasons: the
+            # package is missing, or it is present and cannot resolve a backend
+            # for this session. Only the first is fixed by installing anything,
+            # and telling someone to install what they already have is the
+            # least helpful thing a diagnostic can do. `name` is set only when
+            # the module itself is genuinely absent.
+            if exc.name == "pynput":
+                raise BackendError(
+                    "pynput is not installed. Install padmap's dependencies with "
+                    "`pip install -e .` (or `pip install pynput`)."
+                ) from exc
             raise BackendError(
-                "pynput is not installed. Install padmap's dependencies with "
-                "`pip install -e .` (or `pip install pynput`)."
+                f"pynput could not start on this session ({exc}). padmap needs a "
+                "graphical session to send input into — on Linux that means X11, "
+                "with DISPLAY set."
             ) from exc
         except Exception as exc:
-            # On Linux pynput resolves an X11/uinput backend at import time and
-            # raises if there is no display to talk to.
-            raise BackendError(
-                f"pynput could not start ({exc}). On Linux, padmap needs an "
-                "X11 session (or a uinput-capable backend) to send input."
-            ) from exc
+            raise BackendError(f"pynput could not start ({exc}).") from exc
 
         self._keyboard_module = keyboard
         self._mouse_module = mouse
         self._keyboard = keyboard.Controller()
         self._mouse = mouse.Controller()
         self._key_cache: dict[str, Any] = {}
+        self._warned_buttons: set[str] = set()
 
     def _key(self, name: str) -> Any:
         """Translate a padmap key name into a pynput key object."""
@@ -161,8 +171,29 @@ class PynputBackend:  # pragma: no cover - drives the real desktop
         self._key_cache[name] = key
         return key
 
-    def _button(self, name: str) -> Any:
-        return getattr(self._mouse_module.Button, name)
+    #: pynput spells the side buttons differently per backend, and macOS has
+    #: no equivalent at all. Tried in order; the first that exists wins.
+    SIDE_BUTTON_ALIASES = {
+        "x1": ("x1", "button8", "button9"),
+        "x2": ("x2", "button9", "button8"),
+    }
+
+    def _button(self, name: str) -> Any | None:
+        """Translate a button name, or None if this platform has no such button.
+
+        Returning None rather than raising is deliberate: a profile that binds
+        a side button should still work for every other binding on a machine
+        that lacks one.
+        """
+        buttons = self._mouse_module.Button
+        for candidate in self.SIDE_BUTTON_ALIASES.get(name, (name,)):
+            found = getattr(buttons, candidate, None)
+            if found is not None:
+                return found
+        if name not in self._warned_buttons:
+            self._warned_buttons.add(name)
+            self._warn(f"this platform has no '{name}' mouse button — that binding is inert")
+        return None
 
     def key_down(self, keys: Sequence[str]) -> None:
         """Press a key or combo, modifiers first."""
@@ -179,12 +210,16 @@ class PynputBackend:  # pragma: no cover - drives the real desktop
         self._keyboard.type(text)
 
     def mouse_down(self, button: str) -> None:
-        """Press a mouse button."""
-        self._mouse.press(self._button(button))
+        """Press a mouse button, if this platform has one by that name."""
+        resolved = self._button(button)
+        if resolved is not None:
+            self._mouse.press(resolved)
 
     def mouse_up(self, button: str) -> None:
-        """Release a mouse button."""
-        self._mouse.release(self._button(button))
+        """Release a mouse button, if this platform has one by that name."""
+        resolved = self._button(button)
+        if resolved is not None:
+            self._mouse.release(resolved)
 
     def mouse_move(self, dx: int, dy: int) -> None:
         """Move the pointer relative to where it is now."""
